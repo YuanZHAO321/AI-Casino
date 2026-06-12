@@ -39,13 +39,16 @@ export function pickSlot(persona: Persona, slot: ModelSlot): ModelRef | undefine
 /**
  * 调一次 LLM（经主进程 IPC）。失败自动重试一次。
  * system 每次重组（静态层在前，利于 prompt cache），history 来自角色记忆。
+ * plainText=true：纯说话/报告类输出 —— 必须禁用 response_format json 模式，
+ * 否则 API 层强制 JSON 与「直接输出台词」指令冲突，劣质模型会回空对象 {}。
  */
 export async function callModel(
   rm: ResolvedModel,
   system: string,
   history: ChatMessage[],
   userMsg: string,
-  maxTokens = 400
+  maxTokens = 400,
+  plainText = false
 ): Promise<AiCallResult> {
   const messages = [
     { role: 'system', content: system },
@@ -57,7 +60,7 @@ export async function callModel(
     apiKey: rm.profile.apiKey,
     model: rm.model,
     temperature: rm.profile.temperature,
-    useJsonMode: rm.profile.useJsonMode,
+    useJsonMode: plainText ? false : rm.profile.useJsonMode,
     messages,
     maxTokens
   }

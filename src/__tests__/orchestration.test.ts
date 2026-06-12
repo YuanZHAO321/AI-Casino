@@ -52,6 +52,11 @@ describe('unwrapSpeech：纯说话输出防 JSON 泄漏（#6/#11）', () => {
   it('未知键取第一个字符串字段', () => {
     expect(unwrapSpeech('{"输出": "你好"}')).toBe('你好')
   })
+  it('空对象/无台词对象返回空串（调用方跳过，不上桌）', () => {
+    expect(unwrapSpeech('{}')).toBe('')
+    expect(unwrapSpeech('{"foo": 123}')).toBe('')
+    expect(unwrapSpeech('```json\n{}\n```')).toBe('')
+  })
 })
 
 describe('角色记忆（六档清理）', () => {

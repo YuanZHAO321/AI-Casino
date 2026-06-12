@@ -1,6 +1,6 @@
 {
   "name": "ai-casino",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI 陪玩赌场 — 拟真赌场桌面应用，AI 对手与陪玩（第一个游戏：21点）",
   "main": "out/main/index.js",
   "author": "zhaoyuan",

@@ -581,7 +581,7 @@ export const useStore = create<AppStore>((set, get) => {
       set({
         analyst: { open: true, targetId, targetName, messages: [], system, busy: true, modelRef: ref }
       })
-      const res = await callModel(rm, system, [], firstUser, 900)
+      const res = await callModel(rm, system, [], firstUser, 900, true)
       const a = get().analyst
       if (!a) return
       if (res.ok) {
@@ -607,7 +607,7 @@ export const useStore = create<AppStore>((set, get) => {
       const rm = resolveModelRef(a.modelRef, get().getProfile)
       if (!rm) return
       set({ analyst: { ...a, busy: true } })
-      const res = await callModel(rm, a.system, a.messages, text, 900)
+      const res = await callModel(rm, a.system, a.messages, text, 900, true)
       const cur = get().analyst
       if (!cur) return
       if (res.ok) {

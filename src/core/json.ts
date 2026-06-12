@@ -67,7 +67,8 @@ export function unwrapSpeech(text: string): string {
   for (const v of Object.values(obj)) {
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
-  return trimmed
+  // 确认是 JSON 对象但取不出任何台词（如裸 {}）→ 返回空串，调用方据此跳过
+  return ''
 }
 
 /** 取数字字段，宽容字符串数字 */

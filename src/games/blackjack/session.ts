@@ -183,23 +183,27 @@ export class BlackjackSession {
     return this.resolveSlot(persona, 'fast') === null
   }
 
-  /** 带备用模型的调用：主模型（内部重试1次）失败 → 备用模型再试 */
+  /**
+   * 带备用模型的调用：主模型（内部重试1次）失败 → 备用模型再试。
+   * plainText=true 用于纯说话类输出（禁用 API 层 JSON 模式，防空 {} 回包）。
+   */
   private async callSlot(
     ch: CharacterState,
     slot: ModelSlot,
     system: string,
     userMsg: string,
-    maxTokens = 400
+    maxTokens = 400,
+    plainText = false
   ): Promise<{ ok: boolean; content: string; modelLabel?: string; error?: string }> {
     const primary = this.resolveSlot(ch.persona, slot)
     if (!primary) return { ok: false, content: '', error: 'local' }
     const history = ch.memory.contextMessages()
-    let res = await callModel(primary, system, history, userMsg, maxTokens)
+    let res = await callModel(primary, system, history, userMsg, maxTokens, plainText)
     if (res.ok) return { ...res, modelLabel: primary.model }
     const backup = resolveModelRef(ch.persona.backup, this.getProfile)
     if (backup && (backup.profile.id !== primary.profile.id || backup.model !== primary.model)) {
       this.onEvent({ type: 'backup-used', personaName: ch.persona.name, model: backup.model })
-      res = await callModel(backup, system, history, userMsg, maxTokens)
+      res = await callModel(backup, system, history, userMsg, maxTokens, plainText)
       if (res.ok) return { ...res, modelLabel: backup.model }
     }
     return { ok: false, content: '', error: res.error }
@@ -650,7 +654,7 @@ export class BlackjackSession {
     ctx.playerFunds = this.playerFundsLine()
     if (extraUserMsg) ctx.playerMessages.push(extraUserMsg)
     const user = speechPrompt(view, comp.persona.cardCounting, ctx, SPEECH_INSTRUCTIONS[kind])
-    const res = await this.callSlot(comp, slot, system, user)
+    const res = await this.callSlot(comp, slot, system, user, 400, true)
     this.onEvent({ type: 'thinking', personaId: comp.persona.id, on: false })
     if (!res.ok) {
       if (res.error !== 'local') {
@@ -660,6 +664,7 @@ export class BlackjackSession {
     }
     comp.memory.record(user, res.content)
     const text = unwrapSpeech(res.content)
+    if (!text) return null // 空输出（如裸 {}）不上桌
     this.utter(comp.persona, text, 'companion')
     return text
   }
@@ -700,11 +705,12 @@ export class BlackjackSession {
     const system = buildSystemPrompt(dealer.persona, { rules: this.ruleView() }, 'speech')
     const ctx = this.takeContext(dealer)
     const user = speechPrompt(view, false, ctx, SPEECH_INSTRUCTIONS[kind])
-    const res = await this.callSlot(dealer, 'fast', system, user)
+    const res = await this.callSlot(dealer, 'fast', system, user, 400, true)
     this.onEvent({ type: 'thinking', personaId: dealer.persona.id, on: false })
     if (!res.ok) return null
     dealer.memory.record(user, res.content)
     const text = unwrapSpeech(res.content)
+    if (!text) return null
     this.utter(dealer.persona, text, 'table')
     return text
   }
@@ -731,7 +737,8 @@ export class BlackjackSession {
       '你是一个记忆压缩助手。把给出的对话压缩成一段第一人称的简短记忆摘要（200字内），保留：牌局输赢走势、和玩家的关系/约定、自己说过的重要的话。直接输出摘要文本。',
       [],
       ch.memory.turns.map((t) => `${t.role}: ${t.content}`).join('\n'),
-      400
+      400,
+      true
     )
     if (!res.ok) {
       this.onEvent({ type: 'error', message: `压缩记忆失败：${res.error}` })
@@ -911,7 +918,8 @@ export async function generateReport(
     '你是一位赌场数据分析师。根据给出的 21 点对局记录和统计，写一份简短的分析报告：玩家整体胜率与盈亏走势、下注习惯点评、各 AI 角色表现对比、赌场盈亏、有意思的事件。直接输出纯文本报告（可用小标题分段），严禁输出 JSON 或代码块，总长 500 字以内。',
     [],
     `${statsBrief}\n\n最近对局：\n${lines.join('\n')}`,
-    1200
+    1200,
+    true
   )
   return res.ok ? { ok: true, text: unwrapSpeech(res.content) } : { ok: false, error: res.error }
 }
