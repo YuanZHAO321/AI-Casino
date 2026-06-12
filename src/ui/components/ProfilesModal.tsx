@@ -10,9 +10,10 @@ export function ProfilesModal(): React.JSX.Element {
   const setModal = useStore((s) => s.setModal)
   const editable = profiles.filter((p) => p.id !== LOCAL_BOT_PROFILE_ID)
   const [selectedId, setSelectedId] = useState(editable[0]?.id ?? '')
-  const [models, setModels] = useState<string[]>([])
+  const [fetched, setFetched] = useState<string[]>([])
   const [fetching, setFetching] = useState(false)
   const [fetchError, setFetchError] = useState('')
+  const [manualModel, setManualModel] = useState('')
 
   const selected = profiles.find((p) => p.id === selectedId)
 
@@ -27,13 +28,13 @@ export function ProfilesModal(): React.JSX.Element {
       name: `API ${editable.length + 1}`,
       baseURL: 'https://api.openai.com/v1',
       apiKey: '',
-      model: '',
+      models: [],
       temperature: 0.8,
       useJsonMode: true
     }
     saveProfiles([...profiles, p])
     setSelectedId(p.id)
-    setModels([])
+    setFetched([])
   }
 
   const removeProfile = (): void => {
@@ -49,8 +50,23 @@ export function ProfilesModal(): React.JSX.Element {
     setFetchError('')
     const res = await window.casino.llm.models(selected.baseURL, selected.apiKey)
     setFetching(false)
-    if (res.ok && res.models) setModels(res.models)
+    if (res.ok && res.models) setFetched(res.models)
     else setFetchError(res.error ?? t.profiles.fetchFailed)
+  }
+
+  const togglePoolModel = (m: string): void => {
+    if (!selected) return
+    const models = selected.models.includes(m)
+      ? selected.models.filter((x) => x !== m)
+      : [...selected.models, m]
+    patch({ models })
+  }
+
+  const addManual = (): void => {
+    const m = manualModel.trim()
+    if (!m || !selected || selected.models.includes(m)) return
+    patch({ models: [...selected.models, m] })
+    setManualModel('')
   }
 
   return (
@@ -64,17 +80,15 @@ export function ProfilesModal(): React.JSX.Element {
               className={`pane-item ${p.id === selectedId ? 'on' : ''}`}
               onClick={() => {
                 setSelectedId(p.id)
-                setModels([])
+                setFetched([])
                 setFetchError('')
               }}
             >
               {p.name}
-              <em>{p.model || '—'}</em>
+              <em>{p.models.length ? `${p.models.length} 模型` : '—'}</em>
             </div>
           ))}
-          <button className="btn-ghost" onClick={addProfile}>
-            + {t.panels.add}
-          </button>
+          <button className="btn-ghost" onClick={addProfile}>+ {t.panels.add}</button>
         </div>
         {selected && (
           <div className="pane-form">
@@ -92,50 +106,54 @@ export function ProfilesModal(): React.JSX.Element {
             </div>
             <div className="form-row">
               <label>{t.profiles.apiKey}</label>
-              <input
-                type="password"
-                value={selected.apiKey}
-                onChange={(e) => patch({ apiKey: e.target.value })}
-              />
+              <input type="password" value={selected.apiKey} onChange={(e) => patch({ apiKey: e.target.value })} />
             </div>
-            <div className="form-row">
-              <label>{t.profiles.model}</label>
-              <input
-                value={selected.model}
-                list="model-list"
-                placeholder={t.profiles.manualModel}
-                onChange={(e) => patch({ model: e.target.value })}
-              />
-              <datalist id="model-list">
-                {models.map((m) => (
-                  <option key={m} value={m} />
+
+            <div className="form-row form-row-tall">
+              <label>{t.profiles.modelPool}</label>
+              <div className="model-pool">
+                {selected.models.map((m) => (
+                  <span key={m} className="check-chip model-chip">
+                    {m}
+                    <button className="btn-close" onClick={() => togglePoolModel(m)}>✕</button>
+                  </span>
                 ))}
-              </datalist>
-              <button className="btn-ghost" onClick={fetchModels} disabled={fetching || !selected.baseURL}>
-                {fetching ? t.profiles.fetching : t.profiles.fetchModels}
-              </button>
-            </div>
-            {models.length > 0 && (
-              <div className="form-row">
-                <label />
-                <select value={selected.model} onChange={(e) => patch({ model: e.target.value })}>
-                  <option value="">—</option>
-                  {models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                <div className="model-add-row">
+                  <input
+                    value={manualModel}
+                    placeholder={t.profiles.modelPlaceholder}
+                    onChange={(e) => setManualModel(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addManual()}
+                  />
+                  <button className="btn-mini" onClick={addManual} disabled={!manualModel.trim()}>
+                    {t.profiles.addModel}
+                  </button>
+                  <button className="btn-ghost" onClick={fetchModels} disabled={fetching || !selected.baseURL}>
+                    {fetching ? t.profiles.fetching : t.profiles.fetchModels}
+                  </button>
+                </div>
+                {fetched.length > 0 && (
+                  <div className="fetched-models">
+                    {fetched.map((m) => (
+                      <label key={m} className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={selected.models.includes(m)}
+                          onChange={() => togglePoolModel(m)}
+                        />
+                        {m}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {fetchError && <p className="form-error">{fetchError}</p>}
               </div>
-            )}
-            {fetchError && <p className="form-error">{fetchError}</p>}
+            </div>
+
             <div className="form-row">
               <label>{t.profiles.temperature}</label>
               <input
-                type="number"
-                step="0.1"
-                min="0"
-                max="2"
+                type="number" step="0.1" min="0" max="2"
                 value={selected.temperature}
                 onChange={(e) => patch({ temperature: Number(e.target.value) })}
               />
@@ -150,9 +168,7 @@ export function ProfilesModal(): React.JSX.Element {
             </label>
             <p className="form-note">{t.profiles.testNote}</p>
             <div className="modal-actions">
-              <button className="btn-danger" onClick={removeProfile}>
-                {t.panels.delete}
-              </button>
+              <button className="btn-danger" onClick={removeProfile}>{t.panels.delete}</button>
             </div>
           </div>
         )}

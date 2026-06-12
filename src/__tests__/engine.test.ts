@@ -88,6 +88,34 @@ describe('ENHC：庄家后补成 Blackjack', () => {
     state = playDealer(applyAction(state, 'stand')) // 庄 6+7+8=21（三张）
     expect(state.seats[0].outcomes).toEqual(['lose']) // 20 < 21 但不是 dealer-blackjack
   })
+
+  it('玩家天生 BJ 击败庄家三张 21，照付 3:2（真实赌场规则）', () => {
+    const shoe = riggedShoe(['AS', '6H', 'KD', '7C', '8C'])
+    let state = startRound(shoe, rules, 1, [seat(10)])
+    expect(state.phase).toBe('dealer') // BJ 自动停
+    state = playDealer(state) // 庄 6+7+8 = 21（三张，非 BJ）
+    expect(state.dealerCards.length).toBe(3)
+    expect(state.seats[0].outcomes).toEqual(['blackjack'])
+    expect(state.seats[0].net).toBe(15) // 3:2
+  })
+
+  it('玩家 BJ 对庄家两张 21（真 BJ）：必定推局，绝不赔 3:2', () => {
+    // 庄家明牌 10，补 A → 两张 21 = Blackjack
+    const shoe = riggedShoe(['AS', '10H', 'KD', 'AC'])
+    let state = startRound(shoe, rules, 1, [seat(10)])
+    state = playDealer(state)
+    expect(state.dealerCards.length).toBe(2)
+    expect(state.seats[0].outcomes).toEqual(['push'])
+    expect(state.seats[0].net).toBe(0)
+  })
+
+  it('加倍获胜赔付 = 翻倍后注额（押10加倍赢得20）', () => {
+    const shoe = riggedShoe(['6S', '5H', '5D', '10C', '9S', '8H'])
+    let state = startRound(shoe, rules, 1, [seat(10)])
+    state = applyAction(state, 'double') // 11 + 10 = 21，注 20
+    state = playDealer(state) // 庄 5+9=14 → +8 = 22 爆
+    expect(state.seats[0].net).toBe(20)
+  })
 })
 
 describe('庄家 S17/H17', () => {

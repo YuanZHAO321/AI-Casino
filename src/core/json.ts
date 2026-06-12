@@ -50,6 +50,26 @@ export function strField(obj: Record<string, unknown>, key: string): string | un
   return typeof v === 'string' && v.trim() ? v.trim() : undefined
 }
 
+/**
+ * 纯说话类输出的 JSON 防泄漏：劣质模型常把台词包进 {"response": "..."} 等结构。
+ * 若整体是 JSON 对象，取第一个非空字符串字段（按常见键优先）；否则原样返回。
+ */
+export function unwrapSpeech(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('```')) return trimmed
+  const obj = extractJsonObject(trimmed)
+  if (!obj) return trimmed
+  const preferred = ['say', 'response', 'text', 'reply', 'content', 'message', 'speech', 'report']
+  for (const key of preferred) {
+    const v = obj[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return trimmed
+}
+
 /** 取数字字段，宽容字符串数字 */
 export function numField(obj: Record<string, unknown>, key: string): number | undefined {
   const v = obj[key]

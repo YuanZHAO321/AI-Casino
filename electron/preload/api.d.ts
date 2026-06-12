@@ -17,6 +17,21 @@ export interface LlmChatResponse {
   usage?: { promptTokens?: number; completionTokens?: number }
 }
 
+export interface ImportResult {
+  ok: boolean
+  url?: string
+  name?: string
+  error?: string
+}
+
+export interface TtsModelInfo {
+  id: string
+  type: 'kokoro' | 'vits'
+  sizeMB?: number
+  builtin: boolean
+  installed: boolean
+}
+
 declare global {
   interface Window {
     casino: {
@@ -30,6 +45,40 @@ declare global {
       store: {
         load: (key: string) => Promise<unknown>
         save: (key: string, value: unknown) => Promise<void>
+      }
+      files: {
+        import: (kind: 'image' | 'audio', dir: 'custom' | 'music') => Promise<ImportResult>
+        remove: (url: string) => Promise<boolean>
+      }
+      data: {
+        export: (
+          sections: ('all' | 'api' | 'personas' | 'history')[]
+        ) => Promise<{ ok: boolean; path?: string; error?: string }>
+        import: () => Promise<{ ok: boolean; sections?: string[]; error?: string }>
+      }
+      tts: {
+        models: () => Promise<TtsModelInfo[]>
+        downloadModel: (modelId: string) => Promise<{ ok: boolean; error?: string }>
+        cancelDownload: () => Promise<void>
+        importModel: () => Promise<{ ok: boolean; id?: string; error?: string }>
+        removeModel: (modelId: string) => Promise<boolean>
+        load: (modelId: string) => Promise<{ ok: boolean; numSpeakers?: number; error?: string }>
+        synthesize: (
+          modelId: string,
+          text: string,
+          sid: number,
+          speed: number
+        ) => Promise<{ ok: boolean; wavBase64?: string; error?: string }>
+        api: (req: {
+          baseURL: string
+          apiKey: string
+          model: string
+          voice: string
+          input: string
+        }) => Promise<{ ok: boolean; audioBase64?: string; mime?: string; error?: string }>
+        onDownloadProgress: (
+          cb: (p: { modelId: string; received: number; total: number }) => void
+        ) => () => void
       }
       platform: string
     }

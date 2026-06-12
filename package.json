@@ -1,6 +1,6 @@
 {
   "name": "ai-casino",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "AI 陪玩赌场 — 拟真赌场桌面应用，AI 对手与陪玩（第一个游戏：21点）",
   "main": "out/main/index.js",
   "author": "zhaoyuan",
@@ -19,6 +19,9 @@
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "sherpa-onnx-darwin-arm64": "^1.13.2",
+    "sherpa-onnx-node": "^1.13.2",
+    "sherpa-onnx-win-x64": "^1.13.2",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -40,8 +43,14 @@
       "buildResources": "buildResources"
     },
     "files": [
-      "out/**",
-      "assets/**"
+      "out/**"
+    ],
+    "asarUnpack": [
+      "out/main/ttsWorker.js",
+      "node_modules/sherpa-onnx-node/**",
+      "node_modules/sherpa-onnx-darwin-arm64/**",
+      "node_modules/sherpa-onnx-darwin-x64/**",
+      "node_modules/sherpa-onnx-win-x64/**"
     ],
     "mac": {
       "category": "public.app-category.card-games",

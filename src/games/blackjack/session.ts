@@ -1,32 +1,38 @@
 /**
  * 牌桌会话编排器：驱动整局流程、AI 调用预算、记忆、桌聊、兜底。
+ * 一个 session = 一场（Match）内的连续多局。
  *
- * 调用预算（设计目标：对调用次数计费友好）：
+ * 调用预算（对调用次数计费友好）：
  *  - 对手下注：第 1 局每对手 1 次；之后用上局结算输出的 nextBet（0 调用）；
- *    若关闭结算宣言则直接沿用上局注额（0 调用）。
- *  - 对手行动：每个决策点 1 次（行动+台词同一次调用）。
- *  - 结算：开启宣言时每对手 1 次（宣言+下局注额同一次调用）、每陪玩 1 次、荷官 1 次。
+ *    关闭结算宣言则沿用上局注额（0 调用）。
+ *  - 对手行动/保险：每个决策点 1 次（行动+台词同一次调用）。
+ *  - 结算：开启宣言时每对手 1 次（宣言+下局注额同一次）、每陪玩 1 次、荷官 1 次。
  *  - 玩家私聊与桌聊并入对应角色下一次调用，0 额外调用。
+ *  - 备用模型：仅主模型重试后仍失败时追加调用。
  */
-import { Shoe } from '@/core/shoe'
+import { Shoe, ShoeSnapshot } from '@/core/shoe'
+import { cardLabel } from '@/core/cards'
 import { chance } from '@/core/rng'
 import {
   ApiProfile, Persona, RoundRecord, SeatResult, TableUtterance, PlayerDecision
 } from '@/core/types'
 import { CharacterMemory } from '@/core/memory'
-import { callCharacter, isLocalBot } from '@/core/aiClient'
-import { extractJsonObject, numField, strField } from '@/core/json'
+import {
+  callModel, resolveModelRef, pickSlot, ModelSlot, ResolvedModel
+} from '@/core/aiClient'
+import { extractJsonObject, numField, strField, unwrapSpeech } from '@/core/json'
 import {
   BlackjackRules, BlackjackState, SideBetStakes, TableView, BlackjackAction
 } from './types'
 import {
-  startRound as engineStartRound, getLegalActions, applyAction, playDealer, SeatBetInput
+  startRound as engineStartRound, getLegalActions, applyAction,
+  playDealer, dealerMustDraw, dealerDrawOne, settleRound, SeatBetInput
 } from './engine'
 import { projectView } from './projection'
 import { basicStrategy, fallbackAction, resolveProposedAction } from './basicStrategy'
 import {
   buildSystemPrompt, betPrompt, decisionPrompt, settlementPrompt, speechPrompt,
-  SPEECH_INSTRUCTIONS, TurnContext
+  SPEECH_INSTRUCTIONS, DEALER_DRAW_FORMAT, rulesLayer, characterLayer, TurnContext
 } from './prompts'
 
 export interface SessionSettings {
@@ -34,11 +40,11 @@ export interface SessionSettings {
   declarations: boolean
   dealerSettle: boolean
   habitMemory: boolean
+  playMode: 'auto' | 'manual'
 }
 
 export interface CharacterState {
   persona: Persona
-  profile: ApiProfile
   memory: CharacterMemory
   lastSeenUtterance: number
   pendingPlayerMsgs: string[]
@@ -47,7 +53,7 @@ export interface CharacterState {
   bankroll: number
   nextBet?: number
   nextSideBets?: SideBetStakes
-  /** 最近几局战绩（注入开局/结算 ctx） */
+  /** 最近几局战绩（按 historyAwareness 注入） */
   recentResults: string[]
 }
 
@@ -62,28 +68,35 @@ export type SessionEvent =
   | { type: 'rebuy'; who: string }
   | { type: 'round-settled'; record: RoundRecord }
   | { type: 'log'; message: string }
+  | { type: 'step'; personaId: string; personaName: string; what: string }
+  | { type: 'backup-used'; personaName: string; model: string }
 
 export interface SessionConfig {
   rules: BlackjackRules
   playerName: string
   playerBankroll: number
-  /** 玩家在 box 顺序中的位置（0 = 第一个行动） */
-  playerSeatIndex: number
-  opponents: { persona: Persona; profile: ApiProfile }[]
-  companions: { persona: Persona; profile: ApiProfile }[]
-  dealer: { persona: Persona; profile: ApiProfile } | null
+  /** 本场起始资金（陪玩可见的盈亏基准） */
+  matchStartBankroll: number
+  /** 已进行的局数（继续一场时恢复局号） */
+  startRoundNo?: number
+  /** box 顺序：'player' 或 对手 personaId */
+  seatOrder: string[]
+  opponents: Persona[]
+  companions: Persona[]
+  dealer: Persona | null
   settings: SessionSettings
+  getProfile: (id: string) => ApiProfile | undefined
+  shoeSnapshot?: ShoeSnapshot | null
   onEvent: (e: SessionEvent) => void
 }
 
 const PLAYER_SEAT = 'player'
 const REBUY_AMOUNT = 1000
 
-function makeChar(persona: Persona, profile: ApiProfile): CharacterState {
+function makeChar(persona: Persona): CharacterState {
   return {
     persona,
-    profile,
-    memory: new CharacterMemory(persona.memoryMode),
+    memory: new CharacterMemory(persona.memoryReset),
     lastSeenUtterance: 0,
     pendingPlayerMsgs: [],
     bankroll: REBUY_AMOUNT,
@@ -97,32 +110,46 @@ export class BlackjackSession {
   settings: SessionSettings
   playerName: string
   playerBankroll: number
-  playerSeatIndex: number
+  matchStartBankroll: number
+  seatOrder: string[]
   opponents: CharacterState[]
   companions: CharacterState[]
   dealer: CharacterState | null
-  roundNo = 0
+  roundNo: number
   private state: BlackjackState | null = null
   private utterances: TableUtterance[] = []
   private utteranceSeq = 0
   private onEvent: (e: SessionEvent) => void
+  private getProfile: (id: string) => ApiProfile | undefined
   private busy = false
-  /** 玩家本局习惯记录 */
+  private stepGate: (() => void) | null = null
   private playerDecisions: PlayerDecision[] = []
   private playerBetThisRound = 0
   private playerSideBetsThisRound: SideBetStakes = {}
   private bankrollBefore = 0
+  /** 玩家最近几局战绩（陪玩感知用） */
+  private playerRecent: string[] = []
 
   constructor(cfg: SessionConfig) {
     this.rules = cfg.rules
     this.shoe = new Shoe(cfg.rules.decks, cfg.rules.penetration)
+    if (cfg.shoeSnapshot) this.shoe.restore(cfg.shoeSnapshot)
     this.settings = cfg.settings
     this.playerName = cfg.playerName
     this.playerBankroll = cfg.playerBankroll
-    this.playerSeatIndex = Math.min(cfg.playerSeatIndex, cfg.opponents.length)
-    this.opponents = cfg.opponents.map((o) => makeChar(o.persona, o.profile))
-    this.companions = cfg.companions.map((c) => makeChar(c.persona, c.profile))
-    this.dealer = cfg.dealer ? makeChar(cfg.dealer.persona, cfg.dealer.profile) : null
+    this.matchStartBankroll = cfg.matchStartBankroll
+    this.roundNo = cfg.startRoundNo ?? 0
+    this.opponents = cfg.opponents.map(makeChar)
+    this.companions = cfg.companions.map(makeChar)
+    this.dealer = cfg.dealer ? makeChar(cfg.dealer) : null
+    this.getProfile = cfg.getProfile
+    // 座位顺序：过滤掉无效项，保证玩家在场
+    const validIds = new Set(this.opponents.map((o) => o.persona.id))
+    this.seatOrder = cfg.seatOrder.filter((s) => s === PLAYER_SEAT || validIds.has(s))
+    for (const o of this.opponents) {
+      if (!this.seatOrder.includes(o.persona.id)) this.seatOrder.push(o.persona.id)
+    }
+    if (!this.seatOrder.includes(PLAYER_SEAT)) this.seatOrder.push(PLAYER_SEAT)
     this.onEvent = cfg.onEvent
   }
 
@@ -132,6 +159,69 @@ export class BlackjackSession {
 
   get inRound(): boolean {
     return this.state !== null && this.state.phase !== 'settled'
+  }
+
+  getShoeSnapshot(): ShoeSnapshot {
+    return this.shoe.serialize()
+  }
+
+  /** 局间手动换新牌靴 */
+  newShoe(): boolean {
+    if (this.inRound) return false
+    this.shoe.reshuffle()
+    this.onEvent({ type: 'log', message: '已更换新牌靴。' })
+    return true
+  }
+
+  /* ---------------- 模型解析与调用 ---------------- */
+
+  private resolveSlot(persona: Persona, slot: ModelSlot): ResolvedModel | null {
+    return resolveModelRef(pickSlot(persona, slot), this.getProfile)
+  }
+
+  isLocalChar(persona: Persona): boolean {
+    return this.resolveSlot(persona, 'fast') === null
+  }
+
+  /** 带备用模型的调用：主模型（内部重试1次）失败 → 备用模型再试 */
+  private async callSlot(
+    ch: CharacterState,
+    slot: ModelSlot,
+    system: string,
+    userMsg: string,
+    maxTokens = 400
+  ): Promise<{ ok: boolean; content: string; modelLabel?: string; error?: string }> {
+    const primary = this.resolveSlot(ch.persona, slot)
+    if (!primary) return { ok: false, content: '', error: 'local' }
+    const history = ch.memory.contextMessages()
+    let res = await callModel(primary, system, history, userMsg, maxTokens)
+    if (res.ok) return { ...res, modelLabel: primary.model }
+    const backup = resolveModelRef(ch.persona.backup, this.getProfile)
+    if (backup && (backup.profile.id !== primary.profile.id || backup.model !== primary.model)) {
+      this.onEvent({ type: 'backup-used', personaName: ch.persona.name, model: backup.model })
+      res = await callModel(backup, system, history, userMsg, maxTokens)
+      if (res.ok) return { ...res, modelLabel: backup.model }
+    }
+    return { ok: false, content: '', error: res.error }
+  }
+
+  /** 手动节奏闸门：manual 模式下等待玩家点「让 TA 思考」 */
+  private async gate(persona: Persona, what: string): Promise<void> {
+    if (this.settings.playMode !== 'manual') return
+    await new Promise<void>((resolve) => {
+      this.stepGate = resolve
+      this.onEvent({ type: 'step', personaId: persona.id, personaName: persona.name, what })
+    })
+    this.stepGate = null
+  }
+
+  /** UI：手动模式下推进一步 */
+  continueStep(): void {
+    this.stepGate?.()
+  }
+
+  get awaitingStep(): boolean {
+    return this.stepGate !== null
   }
 
   /* ---------------- 回合主流程 ---------------- */
@@ -146,10 +236,11 @@ export class BlackjackSession {
       this.playerSideBetsThisRound = playerSideBets
       this.bankrollBefore = this.playerBankroll
 
-      const bets: SeatBetInput[] = []
+      // 按座位顺序收注
+      const betBySeat = new Map<string, SeatBetInput>()
       for (const opp of this.opponents) {
         const { bet, sideBets } = await this.resolveOpponentBet(opp)
-        bets.push({
+        betBySeat.set(opp.persona.id, {
           seatId: opp.persona.id,
           isHuman: false,
           personaId: opp.persona.id,
@@ -158,13 +249,16 @@ export class BlackjackSession {
           sideBets
         })
       }
-      bets.splice(this.playerSeatIndex, 0, {
+      betBySeat.set(PLAYER_SEAT, {
         seatId: PLAYER_SEAT,
         isHuman: true,
         name: this.playerName,
         bet: playerBet,
         sideBets: playerSideBets
       })
+      const bets = this.seatOrder
+        .map((id) => betBySeat.get(id))
+        .filter((b): b is SeatBetInput => !!b)
 
       this.state = engineStartRound(this.shoe, this.rules, this.roundNo, bets)
       this.emitView()
@@ -172,28 +266,34 @@ export class BlackjackSession {
         this.onEvent({ type: 'log', message: '切牌已到，荷官重新洗牌。' })
       }
 
-      // 荷官开局评论
       await this.maybeDealerComment()
-      // 陪玩概率吐槽（看到开局牌面）
       for (const comp of this.companions) {
         const p = comp.persona.companion?.autoCommentChance ?? 0
-        if (p > 0 && chance(p)) await this.companionSpeech(comp, 'companionAuto')
+        if (p > 0 && chance(p) && !this.isLocalChar(comp.persona)) {
+          await this.gate(comp.persona, 'comment')
+          await this.companionSpeech(comp, 'companionAuto')
+        }
       }
 
       this.busy = false
-      await this.runTurns()
+      if (this.state.phase === 'settled') {
+        // 偷看命中庄家 BJ：跳过行动直接结算
+        await this.settleAndRecord()
+      } else {
+        await this.runTurns()
+      }
     } catch (err) {
       this.busy = false
       this.onEvent({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  /** 推进 AI 行动，直到轮到玩家或进入庄家阶段 */
+  /** 推进 AI 行动（含保险阶段），直到轮到玩家或庄家阶段 */
   private async runTurns(): Promise<void> {
     if (!this.state || this.busy) return
     this.busy = true
     try {
-      while (this.state.phase === 'acting') {
+      while (this.state.phase === 'acting' || this.state.phase === 'insurance') {
         const seat = this.state.seats[this.state.activeSeatIndex]
         if (seat.isHuman) {
           this.busy = false
@@ -208,47 +308,55 @@ export class BlackjackSession {
         this.emitView()
       }
       this.busy = false
-      if (this.state.phase === 'dealer') await this.finishRound()
+      if (this.state.phase === 'dealer') {
+        await this.dealerPhase()
+      } else if (this.state.phase === 'settled') {
+        await this.settleAndRecord()
+      }
     } catch (err) {
       this.busy = false
       this.onEvent({ type: 'error', message: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  /** 玩家行动（UI 调用） */
+  /** 玩家行动（UI 调用，含保险决策） */
   async playerAction(action: BlackjackAction): Promise<void> {
-    if (!this.state || this.state.phase !== 'acting' || this.busy) return
+    if (!this.state || this.busy) return
+    if (this.state.phase !== 'acting' && this.state.phase !== 'insurance') return
     const seat = this.state.seats[this.state.activeSeatIndex]
     if (!seat.isHuman) return
     const legal = getLegalActions(this.state)
     if (!legal.includes(action)) return
 
-    if (this.settings.habitMemory) {
+    if (this.settings.habitMemory && this.state.phase === 'acting') {
       const hand = seat.hands[this.state.activeHandIndex]
-      const v = hand.cards.length
-        ? `${hand.cards.map((c) => c.rank).join('+')} vs ${this.state.dealerCards[0].rank}`
-        : ''
       this.playerDecisions.push({
-        situation: v,
+        situation: `${hand.cards.map((c) => c.rank).join('+')} vs ${this.state.dealerCards[0].rank}`,
         action,
-        basicStrategy: basicStrategy(hand.cards, this.state.dealerCards[0], legal)
+        basicStrategy: basicStrategy(hand.cards, this.state.dealerCards[0], legal, {
+          enhc: !this.rules.holeCard
+        })
       })
     }
     applyAction(this.state, action)
     this.emitView()
-    await this.runTurns()
+    const phaseNow = this.state.phase as BlackjackState['phase']
+    if (phaseNow === 'settled') {
+      // 保险后偷看命中 BJ
+      await this.settleAndRecord()
+    } else {
+      await this.runTurns()
+    }
   }
 
   /* ---------------- AI 对手 ---------------- */
 
   private async resolveOpponentBet(opp: CharacterState): Promise<{ bet: number; sideBets: SideBetStakes }> {
-    // 破产自动重新买入
     if (opp.bankroll < this.rules.minBet) {
       opp.bankroll = REBUY_AMOUNT
       this.onEvent({ type: 'rebuy', who: opp.persona.name })
     }
-    // 本地机器人 / 已有上局输出 / 宣言关闭沿用
-    if (isLocalBot(opp.profile)) {
+    if (this.isLocalChar(opp.persona)) {
       return { bet: this.rules.minBet, sideBets: {} }
     }
     if (opp.nextBet !== undefined) {
@@ -258,12 +366,13 @@ export class BlackjackSession {
       }
     }
     // 第一局：单独下注调用
+    await this.gate(opp.persona, 'bet')
     this.onEvent({ type: 'thinking', personaId: opp.persona.id, on: true })
     const viewStub = { rules: this.ruleView() }
     const system = buildSystemPrompt(opp.persona, viewStub, 'bet')
     const ctx = this.takeContext(opp, true)
     const user = betPrompt(opp.bankroll, this.ruleView(), ctx)
-    const res = await callCharacter(opp.profile, system, opp.memory.contextMessages(), user)
+    const res = await this.callSlot(opp, 'fast', system, user)
     this.onEvent({ type: 'thinking', personaId: opp.persona.id, on: false })
 
     let bet = this.rules.minBet
@@ -277,7 +386,7 @@ export class BlackjackSession {
         if (say && opp.persona.speechEnabled) this.utter(opp.persona, say, 'table')
       }
       opp.memory.record(user, res.content)
-    } else {
+    } else if (res.error !== 'local') {
       this.onEvent({ type: 'error', message: `${opp.persona.name} 下注调用失败（${res.error}），按最低注` })
     }
     return { bet, sideBets }
@@ -288,19 +397,21 @@ export class BlackjackSession {
     const opp = this.opponents.find((o) => o.persona.id === seatId)!
     const legal = getLegalActions(state)
 
-    if (isLocalBot(opp.profile)) {
+    if (this.isLocalChar(opp.persona)) {
       applyAction(state, fallbackAction(state, legal))
       return
     }
 
+    await this.gate(opp.persona, state.phase === 'insurance' ? 'insurance' : 'action')
     this.onEvent({ type: 'thinking', personaId: opp.persona.id, on: true })
     const view = projectView(state, seatId)
     const system = buildSystemPrompt(opp.persona, view, 'decision')
     const ctx = this.takeContext(opp)
-    const handCount = state.seats[state.activeSeatIndex].hands.length
-    const handNote = handCount > 1 ? `（你的第 ${state.activeHandIndex + 1}/${handCount} 手）` : undefined
+    const seat = state.seats[state.activeSeatIndex]
+    const handNote =
+      seat.hands.length > 1 ? `（你的第 ${state.activeHandIndex + 1}/${seat.hands.length} 手）` : undefined
     const user = decisionPrompt(view, legal, opp.persona.cardCounting, ctx, handNote)
-    const res = await callCharacter(opp.profile, system, opp.memory.contextMessages(), user)
+    const res = await this.callSlot(opp, 'fast', system, user)
     this.onEvent({ type: 'thinking', personaId: opp.persona.id, on: false })
 
     let proposed: string | undefined
@@ -317,23 +428,77 @@ export class BlackjackSession {
     }
     const { action, corrected } = resolveProposedAction(state, legal, proposed)
     if (corrected) {
-      opp.pendingCorrection = `你上一次提出的操作「${proposed ?? '无法解析'}」不合法或无法识别，荷官按基本策略替你执行了 ${action}。`
+      opp.pendingCorrection = `你上一次提出的操作「${proposed ?? '无法解析'}」不合法或无法识别，已按基本策略替你执行了 ${action}。`
       this.onEvent({ type: 'corrected', speakerName: opp.persona.name, proposed: proposed ?? '?', action })
     }
     if (say && opp.persona.speechEnabled) this.utter(opp.persona, say, 'table')
     applyAction(state, action)
   }
 
+  /* ---------------- 庄家阶段 ---------------- */
+
+  private async dealerPhase(): Promise<void> {
+    const state = this.state!
+    const d = this.dealer
+    const interactive =
+      d && !this.isLocalChar(d.persona) && (d.persona.dealerUseModel || d.persona.dealerDrawSpeech)
+
+    if (!interactive) {
+      playDealer(state)
+      this.emitView()
+      await this.settleAndRecord()
+      return
+    }
+
+    // 逐张抽牌（模型决策 / 抽牌播报）
+    if (state.rules.holeCard) {
+      state.holeRevealed = true
+      this.emitView()
+    }
+    const anyLive = state.seats.some((s) => s.hands.some((h) => !h.bust && !h.surrendered))
+    if (anyLive) {
+      let guard = 0
+      while (dealerMustDraw(state) && guard++ < 12) {
+        if (d!.persona.dealerUseModel) {
+          await this.gate(d!.persona, 'dealer-draw')
+          this.onEvent({ type: 'thinking', personaId: d!.persona.id, on: true })
+          const view = projectView(state, 'dealer')
+          const system = [rulesLayer(view), characterLayer(d!.persona), DEALER_DRAW_FORMAT].join('\n\n')
+          const ctx = this.takeContext(d!)
+          const user = speechPrompt(view, false, ctx, '请按规则决定是否补牌并播报。')
+          const res = await this.callSlot(d!, 'fast', system, user)
+          this.onEvent({ type: 'thinking', personaId: d!.persona.id, on: false })
+          if (res.ok) {
+            d!.memory.record(user, res.content)
+            const obj = extractJsonObject(res.content)
+            const say = obj ? strField(obj, 'say') : undefined
+            if (say && d!.persona.speechEnabled) this.utter(d!.persona, say, 'table')
+            // 规则强制：必须补牌时模型说 stand 也照补（荷官无裁量权）
+          }
+          dealerDrawOne(state)
+          this.emitView()
+        } else {
+          dealerDrawOne(state)
+          this.emitView()
+          if (d!.persona.dealerDrawSpeech) {
+            await this.dealerSpeech('dealerDraw')
+          }
+        }
+      }
+    }
+    settleRound(state)
+    this.emitView()
+    await this.settleAndRecord()
+  }
+
   /* ---------------- 结算 ---------------- */
 
-  private async finishRound(): Promise<void> {
+  private async settleAndRecord(): Promise<void> {
     const state = this.state!
     this.busy = true
     try {
-      playDealer(state)
       this.emitView()
 
-      // 筹码结算
       const playerSeat = state.seats.find((s) => s.isHuman)!
       this.playerBankroll += playerSeat.net
       const oppBankrolls: Record<string, number> = {}
@@ -343,52 +508,57 @@ export class BlackjackSession {
         opp.bankroll += seat.net
         oppBankrolls[seat.seatId] = opp.bankroll
         opp.recentResults.push(`第${this.roundNo}局 ${seat.net >= 0 ? '+' : ''}£${seat.net}`)
-        if (opp.recentResults.length > 5) opp.recentResults.shift()
+        if (opp.recentResults.length > 15) opp.recentResults.shift()
       }
+      this.playerRecent.push(
+        `第${this.roundNo}局 注£${this.playerBetThisRound} ${playerSeat.net >= 0 ? '+' : ''}£${playerSeat.net}`
+      )
+      if (this.playerRecent.length > 15) this.playerRecent.shift()
       this.onEvent({ type: 'bankrolls', player: this.playerBankroll, opponents: oppBankrolls })
 
       const declarations: Record<string, string> = {}
+      const modelUsed: Record<string, string> = {}
 
-      // 对手结算宣言 + 下局注额（同一次调用）
       for (const seat of state.seats) {
         if (seat.isHuman) continue
         const opp = this.opponents.find((o) => o.persona.id === seat.seatId)!
-        if (isLocalBot(opp.profile)) {
+        const rm = this.resolveSlot(opp.persona, 'fast')
+        if (rm) modelUsed[seat.seatId] = rm.model
+        if (this.isLocalChar(opp.persona)) {
           opp.nextBet = this.rules.minBet
           continue
         }
         if (!this.settings.declarations) {
-          // 关闭宣言：沿用本局注额，省一次调用
           opp.nextBet = seat.baseBet
           opp.nextSideBets = seat.sideBets
           continue
         }
+        await this.gate(opp.persona, 'settlement')
         await this.opponentSettlement(opp, seat.seatId, declarations)
       }
 
-      // 陪玩结算感想
       if (this.settings.declarations) {
         for (const comp of this.companions) {
-          if (isLocalBot(comp.profile) || !comp.persona.speechEnabled) continue
+          if (this.isLocalChar(comp.persona) || !comp.persona.speechEnabled) continue
+          await this.gate(comp.persona, 'settlement')
           const text = await this.companionSpeech(comp, 'companionSettle')
           if (text) declarations[comp.persona.id] = text
         }
       }
 
-      // 荷官结算播报
-      if (this.settings.dealerSettle && this.dealer && !isLocalBot(this.dealer.profile)) {
+      if (this.settings.dealerSettle && this.dealer && !this.isLocalChar(this.dealer.persona)) {
+        await this.gate(this.dealer.persona, 'settlement')
         const text = await this.dealerSpeech('dealerSettle')
         if (text) declarations['dealer'] = text
       }
 
-      for (const ch of [...this.opponents, ...this.companions, ...(this.dealer ? [this.dealer] : [])]) {
-        ch.memory.endRound()
-      }
+      for (const ch of this.allChars()) ch.memory.endRound()
 
       const record: RoundRecord = {
         id: globalThis.crypto.randomUUID(),
         game: 'blackjack',
         round: this.roundNo,
+        matchRound: this.roundNo,
         timestamp: Date.now(),
         playerBet: this.playerBetThisRound,
         playerSideBets: this.playerSideBetsThisRound as Record<string, number>,
@@ -399,17 +569,20 @@ export class BlackjackSession {
           seatId: s.seatId,
           personaId: s.isHuman ? undefined : s.seatId,
           personaName: s.name,
-          modelLabel: s.isHuman
-            ? undefined
-            : this.opponents.find((o) => o.persona.id === s.seatId)?.profile.model,
-          bet: s.baseBet,
+          modelLabel: s.isHuman ? undefined : modelUsed[s.seatId] ?? 'local',
+          // 实际总押注（含加倍/分牌/边注/保险），与桌面筹码一致
+          bet:
+            s.hands.reduce((n, h) => n + h.bet, 0) +
+            Object.values(s.sideBets).reduce((n, v) => n + (v ?? 0), 0) +
+            s.insuranceBet,
           net: s.net,
           outcome: s.outcomes.join('/'),
+          hands: s.hands.map((h) => h.cards.map(cardLabel)),
           decisions: s.isHuman && this.settings.habitMemory ? this.playerDecisions : undefined
         })),
         declarations,
         detail: {
-          dealerCards: state.dealerCards.map((c) => `${c.suit}${c.rank}`),
+          dealerCards: state.dealerCards.map(cardLabel),
           shuffled: state.shuffledThisRound,
           playerSideBetHits: playerSeat.sideBetResults.map((r) => ({
             kind: r.kind,
@@ -437,7 +610,7 @@ export class BlackjackSession {
     const system = buildSystemPrompt(opp.persona, view, 'settlement')
     const ctx = this.takeContext(opp, true)
     const user = settlementPrompt(view, opp.bankroll, opp.persona.cardCounting, ctx)
-    const res = await callCharacter(opp.profile, system, opp.memory.contextMessages(), user)
+    const res = await this.callSlot(opp, 'fast', system, user)
     this.onEvent({ type: 'thinking', personaId: opp.persona.id, on: false })
 
     if (!res.ok) {
@@ -462,77 +635,87 @@ export class BlackjackSession {
 
   /* ---------------- 陪玩 / 荷官 ---------------- */
 
-  /** 陪玩说话（自动吐槽/按钮点评/结算感想），返回文本 */
+  /** 陪玩说话；speech 类输出统一过 unwrapSpeech 防 JSON 泄漏 */
   async companionSpeech(
     comp: CharacterState,
     kind: keyof typeof SPEECH_INSTRUCTIONS,
-    extraUserMsg?: string
+    extraUserMsg?: string,
+    slot: ModelSlot = 'fast'
   ): Promise<string | null> {
-    if (isLocalBot(comp.profile)) return null
+    if (this.isLocalChar(comp.persona)) return null
     this.onEvent({ type: 'thinking', personaId: comp.persona.id, on: true })
     const view = this.state ? projectView(this.state, 'companion') : null
     const system = buildSystemPrompt(comp.persona, { rules: this.ruleView() }, 'speech')
     const ctx = this.takeContext(comp)
+    ctx.playerFunds = this.playerFundsLine()
     if (extraUserMsg) ctx.playerMessages.push(extraUserMsg)
     const user = speechPrompt(view, comp.persona.cardCounting, ctx, SPEECH_INSTRUCTIONS[kind])
-    const res = await callCharacter(comp.profile, system, comp.memory.contextMessages(), user)
+    const res = await this.callSlot(comp, slot, system, user)
     this.onEvent({ type: 'thinking', personaId: comp.persona.id, on: false })
     if (!res.ok) {
-      this.onEvent({ type: 'error', message: `${comp.persona.name} 调用失败（${res.error}）` })
+      if (res.error !== 'local') {
+        this.onEvent({ type: 'error', message: `${comp.persona.name} 调用失败（${res.error}）` })
+      }
       return null
     }
     comp.memory.record(user, res.content)
-    const text = res.content.trim()
+    const text = unwrapSpeech(res.content)
     this.utter(comp.persona, text, 'companion')
     return text
   }
 
-  /** 陪玩按钮：吐槽 / 建议 */
+  /** 陪玩按钮：吐槽（快速模型）/ 建议（推理模型） */
   async companionComment(personaId: string, kind: 'banter' | 'advice'): Promise<void> {
     const comp = this.companions.find((c) => c.persona.id === personaId)
     if (!comp) return
-    await this.companionSpeech(comp, kind === 'advice' ? 'companionAdvice' : 'companionBanter')
+    await this.companionSpeech(
+      comp,
+      kind === 'advice' ? 'companionAdvice' : 'companionBanter',
+      undefined,
+      kind === 'advice' ? 'smart' : 'fast'
+    )
   }
 
-  /** 与陪玩自由聊天（即时一次调用） */
+  /** 与陪玩自由聊天（推理模型，即时一次调用） */
   async companionChat(personaId: string, text: string): Promise<void> {
     const comp = this.companions.find((c) => c.persona.id === personaId)
     if (!comp) return
-    this.utterPlayer(text)
-    await this.companionSpeech(comp, 'companionBanter', text)
+    this.utterPlayer(text, 'companion')
+    await this.companionSpeech(comp, 'companionBanter', text, 'smart')
   }
 
   /** 给对手留言（并入其下一次调用，0 额外调用） */
   queueMessageToOpponent(personaId: string, text: string): void {
     const opp = this.opponents.find((o) => o.persona.id === personaId)
     if (!opp) return
-    this.utterPlayer(`（对${opp.persona.name}）${text}`)
+    this.utterPlayer(`（对${opp.persona.name}）${text}`, 'table')
     opp.pendingPlayerMsgs.push(text)
   }
 
-  private async dealerSpeech(kind: 'dealerComment' | 'dealerSettle'): Promise<string | null> {
+  private async dealerSpeech(kind: 'dealerComment' | 'dealerSettle' | 'dealerDraw'): Promise<string | null> {
     const dealer = this.dealer
-    if (!dealer || isLocalBot(dealer.profile)) return null
+    if (!dealer || this.isLocalChar(dealer.persona)) return null
     this.onEvent({ type: 'thinking', personaId: dealer.persona.id, on: true })
     const view = this.state ? projectView(this.state, 'dealer') : null
     const system = buildSystemPrompt(dealer.persona, { rules: this.ruleView() }, 'speech')
     const ctx = this.takeContext(dealer)
     const user = speechPrompt(view, false, ctx, SPEECH_INSTRUCTIONS[kind])
-    const res = await callCharacter(dealer.profile, system, dealer.memory.contextMessages(), user)
+    const res = await this.callSlot(dealer, 'fast', system, user)
     this.onEvent({ type: 'thinking', personaId: dealer.persona.id, on: false })
     if (!res.ok) return null
     dealer.memory.record(user, res.content)
-    const text = res.content.trim()
+    const text = unwrapSpeech(res.content)
     this.utter(dealer.persona, text, 'table')
     return text
   }
 
   private async maybeDealerComment(): Promise<void> {
     const d = this.dealer
-    if (!d) return
+    if (!d || this.isLocalChar(d.persona)) return
     const mode = d.persona.dealerCommentMode ?? 'off'
     if (mode === 'off') return
     if (mode === 'chance' && !chance(d.persona.dealerCommentChance ?? 0.3)) return
+    await this.gate(d.persona, 'comment')
     await this.dealerSpeech('dealerComment')
   }
 
@@ -540,29 +723,37 @@ export class BlackjackSession {
 
   async compressMemory(personaId: string): Promise<boolean> {
     const ch = this.findChar(personaId)
-    if (!ch || isLocalBot(ch.profile) || ch.memory.turns.length === 0) return false
-    const res = await callCharacter(
-      ch.profile,
+    if (!ch || ch.memory.turns.length === 0) return false
+    const rm = this.resolveSlot(ch.persona, 'smart') ?? this.resolveSlot(ch.persona, 'fast')
+    if (!rm) return false
+    const res = await callModel(
+      rm,
       '你是一个记忆压缩助手。把给出的对话压缩成一段第一人称的简短记忆摘要（200字内），保留：牌局输赢走势、和玩家的关系/约定、自己说过的重要的话。直接输出摘要文本。',
       [],
-      ch.memory.turns.map((t) => `${t.role}: ${t.content}`).join('\n')
+      ch.memory.turns.map((t) => `${t.role}: ${t.content}`).join('\n'),
+      400
     )
     if (!res.ok) {
       this.onEvent({ type: 'error', message: `压缩记忆失败：${res.error}` })
       return false
     }
-    ch.memory.applyCompression(res.content.trim())
+    ch.memory.applyCompression(unwrapSpeech(res.content))
     return true
   }
 
   newMemorySession(personaId: string): void {
-    this.findChar(personaId)?.memory.reset()
+    this.findChar(personaId)?.memory.resetAll()
+  }
+
+  /** 新开一场时调用：per-match 及以下档位清空 */
+  endMatchMemories(): void {
+    for (const ch of this.allChars()) ch.memory.endMatch()
   }
 
   getMemorySnapshots(): Record<string, { note: string | null; turns: { role: string; content: string }[] }> {
     const out: Record<string, { note: string | null; turns: { role: string; content: string }[] }> = {}
     for (const ch of this.allChars()) {
-      if (ch.persona.memoryMode === 'persistent') out[ch.persona.id] = ch.memory.serialize()
+      if (ch.memory.persisted) out[ch.persona.id] = ch.memory.serialize()
     }
     return out
   }
@@ -586,8 +777,21 @@ export class BlackjackSession {
   }
 
   private ruleView(): TableView['rules'] {
-    const { decks, hitSoft17, splitAcesOneCard, doubleAfterSplit, minBet, maxBet } = this.rules
-    return { decks, hitSoft17, splitAcesOneCard, doubleAfterSplit, minBet, maxBet }
+    const {
+      decks, hitSoft17, splitAcesOneCard, doubleAfterSplit, holeCard, peek,
+      insurance, lateSurrender, doubleRestriction, maxSplitHands, minBet, maxBet
+    } = this.rules
+    return {
+      decks, hitSoft17, splitAcesOneCard, doubleAfterSplit, holeCard, peek,
+      insurance, lateSurrender, doubleRestriction, maxSplitHands, minBet, maxBet
+    }
+  }
+
+  /** 陪玩/荷官可见的玩家资金（玩家视角全可见 #10） */
+  private playerFundsLine(): string {
+    const net = this.playerBankroll - this.matchStartBankroll
+    const bet = this.inRound ? `，本局押注 £${this.playerBetThisRound}` : ''
+    return `玩家筹码 £${this.playerBankroll}（本场起始 £${this.matchStartBankroll}，本场盈亏 ${net >= 0 ? '+' : ''}£${net}${bet}），已进行 ${this.roundNo} 局`
   }
 
   /** 取出并清空该角色待消费的上下文（私聊、未见桌聊、修正提示、战绩） */
@@ -601,14 +805,25 @@ export class BlackjackSession {
       }
     }
     ch.lastSeenUtterance = this.utteranceSeq
+
+    let historyBrief: string | undefined
+    const awareness = ch.persona.historyAwareness
+    if (awareness !== 'none' && (withHistory || awareness === 'full')) {
+      const own = ch.persona.role === 'opponent' ? ch.recentResults : this.playerRecent
+      const n = awareness === 'full' ? 15 : 5
+      if (own.length) {
+        historyBrief =
+          ch.persona.role === 'opponent'
+            ? `你最近几局：${own.slice(-n).join('，')}`
+            : `玩家最近几局：${own.slice(-n).join('，')}`
+      }
+    }
+
     const ctx: TurnContext = {
       playerMessages: ch.pendingPlayerMsgs.splice(0),
       tableTalk: tableTalk.slice(-8),
       correction: ch.pendingCorrection,
-      historyBrief:
-        withHistory && ch.recentResults.length
-          ? `你最近几局：${ch.recentResults.join('，')}`
-          : undefined
+      historyBrief
     }
     ch.pendingCorrection = undefined
     return ctx
@@ -627,7 +842,7 @@ export class BlackjackSession {
     this.onEvent({ type: 'utterance', utterance: u, channel })
   }
 
-  private utterPlayer(text: string): void {
+  private utterPlayer(text: string, channel: 'table' | 'companion'): void {
     const u: TableUtterance = {
       seq: ++this.utteranceSeq,
       speakerId: 'player',
@@ -636,7 +851,7 @@ export class BlackjackSession {
       round: this.roundNo
     }
     this.utterances.push(u)
-    this.onEvent({ type: 'utterance', utterance: u, channel: 'table' })
+    this.onEvent({ type: 'utterance', utterance: u, channel })
   }
 
   private clampBet(bet: number, bankroll: number): number {
@@ -678,23 +893,30 @@ export class BlackjackSession {
   }
 }
 
-/** AI 战绩分析报告（历史面板按钮，单次调用） */
+/* ---------------- 报告与分析（store 调用） ---------------- */
+
+/** AI 战绩总报告（单次调用，输出过 unwrapSpeech 防 JSON 泄漏） */
 export async function generateReport(
-  profile: ApiProfile,
+  rm: ResolvedModel,
   records: RoundRecord[],
   statsBrief: string
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
-  const recent = records.slice(-60)
+  const recent = records.filter((r) => r.round !== 0).slice(-60)
   const lines = recent.map((r) => {
     const seats = r.seats.map((s) => `${s.personaName}${s.net >= 0 ? '+' : ''}${s.net}`).join(' ')
-    return `#${r.round} 玩家注£${r.playerBet} ${r.playerNet >= 0 ? '+' : ''}£${r.playerNet} | ${seats}`
+    return `#${r.matchRound ?? r.round} 玩家注£${r.playerBet} ${r.playerNet >= 0 ? '+' : ''}£${r.playerNet} | ${seats}`
   })
-  const res = await callCharacter(
-    profile,
-    '你是一位赌场数据分析师。根据给出的 21 点对局记录和统计，写一份简短的中文分析报告：玩家整体胜率与盈亏走势、下注习惯点评、每位 AI 角色的表现对比、有意思的事件。用小标题分段，总长 400 字以内。直接输出报告。',
+  const res = await callModel(
+    rm,
+    '你是一位赌场数据分析师。根据给出的 21 点对局记录和统计，写一份简短的分析报告：玩家整体胜率与盈亏走势、下注习惯点评、各 AI 角色表现对比、赌场盈亏、有意思的事件。直接输出纯文本报告（可用小标题分段），严禁输出 JSON 或代码块，总长 500 字以内。',
     [],
     `${statsBrief}\n\n最近对局：\n${lines.join('\n')}`,
     1200
   )
-  return res.ok ? { ok: true, text: res.content.trim() } : { ok: false, error: res.error }
+  return res.ok ? { ok: true, text: unwrapSpeech(res.content) } : { ok: false, error: res.error }
+}
+
+/** 单角色风格分析（首次调用），之后可通过 analystChat 持续追问 */
+export function buildAnalystSystem(targetName: string): string {
+  return `你是一位常驻赌场的 21 点牌局分析师，正在和玩家讨论「${targetName}」的表现。基于给出的对局记录回答：出牌风格与流派（激进/保守/跟基本策略的偏差）、下注习惯、盈亏走势、值得注意的倾向。说人话，直接输出纯文本，严禁 JSON 或代码块，每次回答 300 字以内。`
 }

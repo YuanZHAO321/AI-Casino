@@ -1,8 +1,8 @@
-import React from 'react'
+import React, { useState } from 'react'
 
 /**
- * 程序化 SVG 扑克牌：保证 52 张清晰一致，不依赖生成图片。
- * label 形如 '♠A' '♥10'
+ * 程序化 SVG 扑克牌：保证 52 张清晰一致。
+ * label 形如 '♠A' '♥10'；'??' 表示暗牌（由调用方渲染 CardBack）。
  */
 export function PlayingCard({ label, w = 64 }: { label: string; w?: number }): React.JSX.Element {
   const suit = label[0]
@@ -24,8 +24,23 @@ export function PlayingCard({ label, w = 64 }: { label: string; w?: number }): R
   )
 }
 
-export function CardBack({ w = 64 }: { w?: number }): React.JSX.Element {
+/** 牌背：优先用图片（默认内置 /textures/card-back.png 或自定义），失败回退 SVG */
+export function CardBack({ w = 64, url }: { w?: number; url?: string | null }): React.JSX.Element {
   const h = w * 1.45
+  const [broken, setBroken] = useState(false)
+  if (url && !broken) {
+    return (
+      <img
+        className="pcard pcard-back-img"
+        src={url}
+        width={w}
+        height={h}
+        draggable={false}
+        onError={() => setBroken(true)}
+        alt=""
+      />
+    )
+  }
   return (
     <svg className="pcard" width={w} height={h} viewBox="0 0 64 93">
       <rect x="0.8" y="0.8" width="62.4" height="91.4" rx="6" fill="#173c2c" stroke="#c9a86a" strokeWidth="1.2" />

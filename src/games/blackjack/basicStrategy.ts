@@ -3,20 +3,35 @@ import { BlackjackAction, BlackjackState } from './types'
 import { handValue, rankValue, isPair } from './hand'
 
 /**
- * 多副牌基本策略（英式无暗牌 ENHC 修正版）：
- * 庄家明牌为 10/A 时不加倍、不分牌（除非别无选择），因为庄家 BJ 会通吃加注。
+ * 多副牌基本策略：
+ * - 无暗牌（英式/欧式 ENHC）：庄家明牌 10/A 时不加倍、不分牌（庄家 BJ 通吃加注）
+ * - 美式（暗牌+偷看）：标准 Vegas 策略 + Late Surrender 表（硬16 vs 9/10/A 非 8,8、硬15 vs 10）
+ * - 保险：永不买（基本策略恒负 EV）
  * 仅用于：本地机器人、AI 非法操作/解析失败兜底、玩家习惯对照。
  */
 export function basicStrategy(
   playerCards: Card[],
   dealerUp: Card,
-  legal: BlackjackAction[]
+  legal: BlackjackAction[],
+  opts: { enhc?: boolean } = {}
 ): BlackjackAction {
+  // 保险阶段
+  if (legal.includes('no-insurance')) return 'no-insurance'
+
   const up = rankValue(dealerUp.rank) // A = 11
-  const enhcDanger = up >= 10 // 庄家 10 或 A
+  const enhcDanger = (opts.enhc ?? true) && up >= 10
 
   const pick = (preferred: BlackjackAction, fallback: BlackjackAction): BlackjackAction =>
     legal.includes(preferred) ? preferred : fallback
+
+  const v = handValue(playerCards)
+
+  // 投降表（仅当合法，即美式前两张）
+  if (legal.includes('surrender') && !v.soft && playerCards.length === 2) {
+    const pairEights = isPair(playerCards) && playerCards[0].rank === '8'
+    if (v.total === 16 && !pairEights && (up === 9 || up === 10 || up === 11)) return 'surrender'
+    if (v.total === 15 && up === 10) return 'surrender'
+  }
 
   // 分牌判定
   if (legal.includes('split') && isPair(playerCards)) {
@@ -27,22 +42,22 @@ export function basicStrategy(
       if (r === '6' && up >= 2 && up <= 6) return 'split'
       if (r === '9' && up !== 7 && up >= 2 && up <= 9) return 'split'
       if (r === '4' && (up === 5 || up === 6)) return 'split'
+    } else if (!(opts.enhc ?? true)) {
+      // 美式：对 10/A 也分 A/8（标准策略）
+      if (r === 'A' || r === '8') return 'split'
     }
     // 5,5 / 10,10 或 ENHC 危险位：按总点数继续走下面逻辑
   }
 
-  const v = handValue(playerCards)
-
   // 软牌
   if (v.soft) {
     const t = v.total
-    if (t >= 19) return pick('stand', 'stand')
+    if (t >= 19) return 'stand'
     if (t === 18) {
       if (!enhcDanger && up >= 3 && up <= 6) return pick('double', 'stand')
       if (up <= 8) return 'stand'
       return 'hit'
     }
-    // 软13–17
     if (!enhcDanger) {
       if (t === 17 && up >= 3 && up <= 6) return pick('double', 'hit')
       if ((t === 15 || t === 16) && up >= 4 && up <= 6) return pick('double', 'hit')
@@ -71,7 +86,7 @@ export function resolveProposedAction(
   legal: BlackjackAction[],
   proposed: string | undefined
 ): { action: BlackjackAction; corrected: boolean } {
-  const normalized = (proposed ?? '').trim().toLowerCase()
+  const normalized = (proposed ?? '').trim().toLowerCase().replace(/_/g, '-')
   if ((legal as string[]).includes(normalized)) {
     return { action: normalized as BlackjackAction, corrected: false }
   }
@@ -81,10 +96,11 @@ export function resolveProposedAction(
 /** 引擎兜底入口：从合法集合中选基本策略动作 */
 export function fallbackAction(state: BlackjackState, legal: BlackjackAction[]): BlackjackAction {
   if (legal.length === 0) return 'stand'
+  if (legal.includes('no-insurance')) return 'no-insurance'
   const seat = state.seats[state.activeSeatIndex]
   const hand = seat?.hands[state.activeHandIndex]
   const up = state.dealerCards[0]
   if (!seat || !hand || !up) return legal[0]
-  const action = basicStrategy(hand.cards, up, legal)
+  const action = basicStrategy(hand.cards, up, legal, { enhc: !state.rules.holeCard })
   return legal.includes(action) ? action : legal.includes('stand') ? 'stand' : legal[0]
 }

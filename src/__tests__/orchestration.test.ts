@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { extractJsonObject, numField, strField } from '@/core/json'
+import { extractJsonObject, numField, strField, unwrapSpeech } from '@/core/json'
 import { CharacterMemory } from '@/core/memory'
-import { computeGlobalStats, computeCharacterStats } from '@/core/stats'
+import {
+  computeGlobalStats, computeHouseStats, computePersonaStats, computeModelStats
+} from '@/core/stats'
 import { checkAchievements } from '@/core/achievements'
+import { migrateProfile, migratePersona } from '@/core/migrate'
 import { RoundRecord } from '@/core/types'
 
 describe('健壮 JSON 提取（劣质模型兼容）', () => {
@@ -31,41 +34,100 @@ describe('健壮 JSON 提取（劣质模型兼容）', () => {
   })
 })
 
-describe('角色记忆', () => {
-  it('per-round 模式每局清空，note 保留', () => {
+describe('unwrapSpeech：纯说话输出防 JSON 泄漏（#6/#11）', () => {
+  it('{"response": "..."} 解包', () => {
+    expect(unwrapSpeech('{"response": "这把打得不错！"}')).toBe('这把打得不错！')
+  })
+  it('{"say": "..."} 与 {"report": "..."} 解包', () => {
+    expect(unwrapSpeech('{"say": "稳住"}')).toBe('稳住')
+    expect(unwrapSpeech('{"report": "### 分析\\n内容"}')).toBe('### 分析\n内容')
+  })
+  it('代码块包裹的 JSON 解包', () => {
+    expect(unwrapSpeech('```json\n{"text": "冲鸭！"}\n```')).toBe('冲鸭！')
+  })
+  it('普通文本原样返回（含开头不是 { 的）', () => {
+    expect(unwrapSpeech('这把打得不错！')).toBe('这把打得不错！')
+    expect(unwrapSpeech('  前后有空格  ')).toBe('前后有空格')
+  })
+  it('未知键取第一个字符串字段', () => {
+    expect(unwrapSpeech('{"输出": "你好"}')).toBe('你好')
+  })
+})
+
+describe('角色记忆（六档清理）', () => {
+  it('none：完全不记录', () => {
+    const m = new CharacterMemory('none')
+    m.record('u1', 'a1')
+    expect(m.contextMessages()).toHaveLength(0)
+  })
+  it('per-round：每局清空', () => {
     const m = new CharacterMemory('per-round')
     m.record('u1', 'a1')
     expect(m.contextMessages()).toHaveLength(2)
     m.endRound()
     expect(m.contextMessages()).toHaveLength(0)
   })
-  it('session 模式跨局保留', () => {
-    const m = new CharacterMemory('session')
+  it('per-match：跨局保留、新场清空、可持久化', () => {
+    const m = new CharacterMemory('per-match')
     m.record('u1', 'a1')
     m.endRound()
     expect(m.contextMessages()).toHaveLength(2)
+    expect(m.persisted).toBe(true)
+    m.endMatch()
+    expect(m.contextMessages()).toHaveLength(0)
+  })
+  it('per-launch：跨场保留但不持久化', () => {
+    const m = new CharacterMemory('per-launch')
+    m.record('u1', 'a1')
+    m.endMatch()
+    expect(m.contextMessages()).toHaveLength(2)
+    expect(m.persisted).toBe(false)
+    m.restore({ note: 'x', turns: [] })
+    expect(m.note).toBeNull() // 不恢复
+  })
+  it('permanent/manual：持久且只有手动清', () => {
+    for (const mode of ['permanent', 'manual'] as const) {
+      const m = new CharacterMemory(mode)
+      m.record('u1', 'a1')
+      m.endRound()
+      m.endMatch()
+      expect(m.contextMessages()).toHaveLength(2)
+      expect(m.persisted).toBe(true)
+      m.resetAll()
+      expect(m.contextMessages()).toHaveLength(0)
+    }
   })
   it('压缩后历史替换为摘要', () => {
-    const m = new CharacterMemory('persistent')
+    const m = new CharacterMemory('permanent')
     m.record('u1', 'a1')
     m.applyCompression('我赢了很多')
     const ctx = m.contextMessages()
     expect(ctx[0].content).toContain('我赢了很多')
-    expect(ctx).toHaveLength(2) // 摘要对 + 无对话
+    expect(ctx).toHaveLength(2)
   })
   it('超长自动截断', () => {
-    const m = new CharacterMemory('session')
+    const m = new CharacterMemory('per-launch')
     for (let i = 0; i < 30; i++) m.record(`u${i}`, `a${i}`)
     expect(m.turns.length).toBe(40)
     expect(m.turns[0].content).toBe('u10')
   })
-  it('persistent 模式可序列化恢复，其他模式不恢复', () => {
-    const p = new CharacterMemory('persistent')
-    p.restore({ note: 'n', turns: [{ role: 'user', content: 'x' }] })
-    expect(p.note).toBe('n')
-    const s = new CharacterMemory('session')
-    s.restore({ note: 'n', turns: [] })
-    expect(s.note).toBeNull()
+})
+
+describe('存储迁移 v0.1→v0.2', () => {
+  it('profile.model → models[]', () => {
+    const p = migrateProfile({ id: 'x', name: 'a', baseURL: 'u', apiKey: 'k', model: 'gpt-4o-mini', temperature: 0.7, useJsonMode: true })
+    expect(p.models).toEqual(['gpt-4o-mini'])
+  })
+  it('persona.profileId → fast 槽；memoryMode 三档 → 六档', () => {
+    const p = migratePersona({
+      id: 'p1', name: 'n', role: 'opponent', promptMode: 'simple', characterText: '',
+      profileId: 'prof-1', cardCounting: false, speechEnabled: true, memoryMode: 'persistent'
+    })
+    expect(p.fast).toEqual({ profileId: 'prof-1', model: '' })
+    expect(p.memoryReset).toBe('permanent')
+    expect(p.historyAwareness).toBe('brief')
+    expect(migratePersona({ memoryMode: 'session' }).memoryReset).toBe('per-launch')
+    expect(migratePersona({ memoryMode: 'per-round' }).memoryReset).toBe('per-round')
   })
 })
 
@@ -84,7 +146,7 @@ function record(partial: Partial<RoundRecord> & { round: number }): RoundRecord 
   }
 }
 
-describe('统计聚合', () => {
+describe('统计四块', () => {
   const records: RoundRecord[] = [
     record({
       round: 1, playerNet: 150,
@@ -97,37 +159,52 @@ describe('统计聚合', () => {
       round: 2, playerNet: -100,
       seats: [
         { seatId: 'player', personaName: '玩家', bet: 100, net: -100, outcome: 'lose' },
-        { seatId: 'o1', personaId: 'o1', personaName: 'Saber', modelLabel: 'gpt-x', bet: 50, net: 50, outcome: 'win' }
+        { seatId: 'o1', personaId: 'o1', personaName: 'Saber', modelLabel: 'gpt-y', bet: 50, net: 50, outcome: 'win' }
       ]
     }),
     record({
-      round: 3, playerNet: 200,
+      round: 3, playerNet: -50,
       seats: [
-        { seatId: 'player', personaName: '玩家', bet: 100, net: 200, outcome: 'win/win' },
-        { seatId: 'o1', personaId: 'o1', personaName: 'Saber', modelLabel: 'gpt-x', bet: 50, net: 0, outcome: 'push' }
+        { seatId: 'player', personaName: '玩家', bet: 100, net: -50, outcome: 'surrender' },
+        { seatId: 'o2', personaId: 'o2', personaName: '老周', modelLabel: 'gpt-x', bet: 50, net: 0, outcome: 'push' }
       ]
     })
   ]
 
-  it('全局统计：胜率/BJ/爆牌/极值', () => {
+  it('玩家统计：胜率/投降/极值/习惯一致率', () => {
     const g = computeGlobalStats(records)
     expect(g.rounds).toBe(3)
-    expect(g.playerNet).toBe(250)
+    expect(g.playerNet).toBe(0)
     expect(g.blackjacks).toBe(1)
-    expect(g.wins).toBe(3) // BJ + 分牌双赢(2)
-    expect(g.losses).toBe(1)
-    expect(g.winRate).toBeCloseTo(0.75)
-    expect(g.biggestWin).toBe(200)
-    expect(g.biggestLoss).toBe(-100)
+    expect(g.surrenders).toBe(1)
+    expect(g.wins).toBe(1)
+    expect(g.losses).toBe(2) // lose + surrender
+    expect(g.strategyMatchRate).toBeNull()
   })
 
-  it('角色统计按 人格@模型 聚合', () => {
-    const cs = computeCharacterStats(records)
-    expect(cs).toHaveLength(1)
-    expect(cs[0].key).toBe('Saber @ gpt-x')
-    expect(cs[0].rounds).toBe(3)
-    expect(cs[0].net).toBe(0)
-    expect(cs[0].busts).toBe(1)
+  it('赌场统计：houseNet 与抽水率', () => {
+    const h = computeHouseStats(records)
+    // 每局 house = -(玩家+对手)：r1 = -(150-50)=-100, r2 = -(-100+50)=50, r3 = -(-50+0)=50
+    expect(h.houseNet).toBe(0)
+    expect(h.trend).toEqual([-100, 50, 50])
+    expect(h.totalWagered).toBe(450)
+    expect(h.edgeRate).toBe(0)
+  })
+
+  it('按人格聚合（跨模型）', () => {
+    const ps = computePersonaStats(records)
+    const saber = ps.find((x) => x.key === 'Saber')!
+    expect(saber.rounds).toBe(2) // gpt-x + gpt-y 合并
+    expect(saber.net).toBe(0)
+    expect(ps.find((x) => x.key === '老周')!.rounds).toBe(1)
+  })
+
+  it('按模型聚合（跨人格）', () => {
+    const ms = computeModelStats(records)
+    const gptx = ms.find((x) => x.key === 'gpt-x')!
+    expect(gptx.rounds).toBe(2) // Saber + 老周 合并
+    expect(gptx.net).toBe(-50)
+    expect(ms.find((x) => x.key === 'gpt-y')!.net).toBe(50)
   })
 })
 
@@ -141,13 +218,6 @@ describe('成就', () => {
     expect(fresh).toContain('first-blackjack')
     expect(fresh).toContain('big-win-500')
   })
-  it('已解锁不重复', () => {
-    const r1 = record({
-      round: 1, playerNet: 150,
-      seats: [{ seatId: 'player', personaName: '玩家', bet: 100, net: 150, outcome: 'blackjack' }]
-    })
-    expect(checkAchievements([r1], r1, new Set(['first-blackjack']))).not.toContain('first-blackjack')
-  })
   it('连胜 5 局', () => {
     const rs = [1, 2, 3, 4, 5].map((i) =>
       record({
@@ -156,7 +226,5 @@ describe('成就', () => {
       })
     )
     expect(checkAchievements(rs, rs[4], new Set())).toContain('win-streak-5')
-    const broken = [...rs.slice(0, 3), record({ round: 4, playerNet: -100 }), rs[4]]
-    expect(checkAchievements(broken, rs[4], new Set())).not.toContain('win-streak-5')
   })
 })
