@@ -314,6 +314,7 @@ export const zh = {
     preferredEngine: '首选引擎（默认发声）',
     neuralMissing: '（未装模型，将回退系统）',
     neuralModels: '神经 TTS 模型（sherpa-onnx）',
+    webUnsupported: '网页版不支持神经 TTS（需原生组件），请使用系统语音或 API 语音。',
     download: '下载',
     downloading: '下载中 {pct}%',
     cancel: '取消',

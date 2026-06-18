@@ -16,5 +16,7 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*", "electron/preload/api.d.ts"]
+  "include": ["src/**/*", "electron/preload/api.d.ts"],
+  "comment": "sw.ts 用 WebWorker lib，与 DOM 单程序冲突；由 vite-plugin-pwa 自行打包/检查",
+  "exclude": ["src/web/sw.ts"]
 }

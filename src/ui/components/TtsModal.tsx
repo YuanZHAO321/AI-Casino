@@ -119,6 +119,7 @@ export function TtsModal(): React.JSX.Element {
       <p className="form-note">{t.tts.engineNote}</p>
 
       <h3>{t.tts.neuralModels}</h3>
+      {window.casino.platform === 'web' && <p className="form-note">{t.tts.webUnsupported}</p>}
       {models.map((m) => (
         <div key={m.id} className="record-row tts-model-row">
           <span className="bgm-name">

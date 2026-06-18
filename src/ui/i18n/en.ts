@@ -316,6 +316,7 @@ export const en: Dict = {
     preferredEngine: 'Preferred engine (default voice)',
     neuralMissing: ' (no model installed, falls back to system)',
     neuralModels: 'Neural TTS models (sherpa-onnx)',
+    webUnsupported: 'Neural TTS is unavailable on the web build (needs native components); use system or API voice instead.',
     download: 'Download',
     downloading: 'Downloading {pct}%',
     cancel: 'Cancel',

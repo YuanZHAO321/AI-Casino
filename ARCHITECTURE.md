@@ -4,18 +4,22 @@
 
 ## 0. 一句话定位
 
-Electron 桌面应用「AI 赌场」：平台核心（座位/人格/LLM 编排/记忆/统计/场次）与具体游戏解耦，Blackjack 是第一个 GameModule。卖点 = AI 对手位 + AI 陪玩位 + 架构级防天眼 + 调用次数/token 双友好。
+「AI 赌场」：平台核心（座位/人格/LLM 编排/记忆/统计/场次）与具体游戏解耦，Blackjack 是第一个 GameModule。卖点 = AI 对手位 + AI 陪玩位 + 架构级防天眼 + 调用次数/token 双友好。**两个发行目标共用同一套 `src/`：Electron 桌面版 + 网页版/PWA**，平台差异全部收敛到 `window.casino` 这一道接缝（细节见 §10）。
 
 ## 1. 技术栈与命令
 
-Electron 33 + electron-vite + React 18 + TypeScript（strict）+ Zustand + vitest + electron-builder。
+Electron 33 + electron-vite + React 18 + TypeScript（strict）+ Zustand + vitest + electron-builder；网页目标额外用 vite + vite-plugin-pwa。
 
 ```bash
-npm run dev          # 开发
-npm test             # vitest（115 个测试，全绿才算改完）
+npm run dev          # Electron 开发
+npm test             # vitest（116 个测试，全绿才算改完）
 npm run typecheck    # 双 tsconfig（web + node）
 npm run dist:mac     # mac universal dmg
 npm run dist:win     # win nsis x64（mac 上交叉打包可用）
+
+npm run dev:web      # 网页开发（PWA 热更新）
+npm run build:web    # 输出 docs/（GitHub Pages 从 /docs 手动部署，相对 base 适配子路径）
+npm run preview:web  # 预览网页构建产物
 ```
 
 ## 2. 进程模型
@@ -128,3 +132,26 @@ npm run dist:win     # win nsis x64（mac 上交叉打包可用）
 - 神经 TTS 运行时（模型下载+首次合成）未在真实环境端到端验证
 - 旧历史记录无牌面字段（v1.0 起才记录）
 - electron-builder 会把 react/zustand 等 renderer 依赖冗余打进 asar（已被 vite 打包，无害但占体积）
+
+## 10. 网页版 / PWA（src/web）
+
+设计原则：**`src/` 一行不改**。整层渲染代码原本就只通过 `window.casino.*` 触达平台能力（桥类型在 `electron/preload/api.d.ts`，是两端共同契约）；网页目标就是为浏览器再实现一份同构的 `window.casino`。
+
+| 文件 | 职责 / 对应桌面模块 |
+|---|---|
+| `web/idb.ts` | IndexedDB key-value（库 `casino`/store `kv`），替代 `storage.ts` |
+| `web/llm.ts` | 浏览器 fetch 版 chat/models（逻辑移植自 `main/llm.ts`，含 /v1 归一化、JSON 模式 400/422 回退、超时） |
+| `web/assets.ts` | 用户文件存 **Cache Storage**（cache 名 `casino-assets`），URL 改为**相对**路径 `casino-asset/<dir>/<file>`，替代 `files.ts` 的 casino-asset:// 协议 |
+| `web/data.ts` | 备份导出(浏览器下载)/导入(选文件)，移植 `dataTransfer.ts` 的 ALL_KEYS/按 id 合并逻辑 |
+| `web/tts.ts` | 神经 TTS 全部降级失败（自动回落系统语音），`apiTts` 移植为浏览器 fetch |
+| `web/platform.ts` | 组装上述模块为 `window.casino` 并 `installWebPlatform()`；仅在桥不存在时安装（不覆盖 Electron） |
+| `web/sw.ts` | Service Worker（vite-plugin-pwa injectManifest）：precache app shell + 拦截路径含 `/casino-asset/` 的请求从 Cache 命中 |
+| `web/main.tsx` | 网页入口：先装桥 → 注册 SW → 渲染 `App`（镜像 `src/main.tsx`） |
+
+**构建**：`vite.web.config.ts`（纯 vite + react + VitePWA）；入口 `index.web.html`（web 版 CSP：去 casino-asset: scheme、放行 connect-src 直连任意接口），产物经插件改名为 `index.html` 输出到 `docs/`。`docs/` **完全自包含**（index.html / assets / sw.js / manifest / 图标 / textures 全在内，运行期无 docs 外文件依赖），可直接静态托管。
+
+**子路径适配（关键不变量）**：面向 GitHub Pages 项目页（`user.github.io/<仓名>/` 子路径）。**不写死仓名/URL**（便于改项目名）——用 **相对 base（`./`）** + 相对 PWA `scope`/`start_url`（随 manifest 位置解析）+ **相对资产 URL（`casino-asset/...` 无前导 /，随文档基址解析）** + **SW 按子串 `/casino-asset/` 匹配**（非固定前缀）。四者保证任意子路径与根路径下都正确，缺一即断。根路径部署可 `WEB_BASE=/ npm run build:web`。具体发布地址只记在 `README.md`。
+
+**网页端取舍**：神经 TTS 不可用（sherpa-onnx 原生插件）；LLM/TTS 受目标接口 CORS 约束；apiKey 存本地 IndexedDB。
+
+**改 `src/` 时注意**：新增的 `window.casino` 用途必须同时在 `electron/preload` 与 `src/web/platform.ts` 落地，否则网页或桌面一端会缺能力。`web/sw.ts` 因用 WebWorker lib 与 DOM 冲突，已从 `tsconfig.web.json` 排除（由 vite-plugin-pwa 自行编译）。

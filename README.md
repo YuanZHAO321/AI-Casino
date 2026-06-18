@@ -4,7 +4,9 @@
 >
 > A casino-simulation desktop app where LLM-powered characters play **against** you and **alongside** you. First game: Blackjack (UK / European / Vegas rules).
 
-![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TS-2ea44f) ![Tests](https://img.shields.io/badge/tests-112%20passed-brightgreen) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)
+![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TS-2ea44f) ![Tests](https://img.shields.io/badge/tests-116%20passed-brightgreen) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Web%20PWA-blue)
+
+> 同一套核心代码，两个发行目标：**Electron 桌面版** 与 **网页版 / PWA**（可安装、离线可开、GitHub Pages 静态托管）。
 
 ## ✨ 特性
 
@@ -50,22 +52,45 @@
 
 ```bash
 npm install
-npm run dev        # 开发模式（内置本地基本策略机器人，无 Key 可玩）
-npm test           # 112 个单元/端到端测试
+npm run dev        # Electron 开发（内置本地基本策略机器人，无 Key 可玩）
+npm test           # 116 个单元/端到端测试
 npm run dist:mac   # 打包 macOS（universal dmg）
 npm run dist:win   # 打包 Windows（NSIS x64）
 ```
 
 启用 AI 角色：「API 接口」填 baseURL/Key → 拉取模型勾入**模型池** → 「角色」绑定快速/推理/备用模型 → 「设置」选座排序 → 应用并重开牌桌。
 
+### 🌐 网页版 / PWA
+
+同一套 `src/` 渲染层，浏览器侧用 `src/web/` 提供 `window.casino`（LLM 走浏览器 fetch、存储用 IndexedDB、用户文件用 Cache Storage、Service Worker 提供离线与资产服务）。
+
+```bash
+npm run dev:web      # 网页开发服务器（含 PWA 热更新）
+npm run build:web    # 产物输出到 docs/（完全自包含，可直接静态托管）
+npm run preview:web  # 本地预览构建产物
+```
+
+**部署目标**：`https://yuanzhao321.github.io/AI-Casino/`。`docs/` 是自包含的完整站点——只把 `docs/` 的内容托管到该路径即可运行（无外部文件依赖）。
+
+**GitHub Pages（项目页，从 `/docs` 目录）**：仓库 Settings → Pages → Source 选 `Deploy from a branch` → 分支 `main` + 目录 `/docs` → 保存。`build:web` 用**相对 base**（不写死仓名，改项目名也无需改构建），自动适配 `.../<仓名>/` 子路径。
+- **部署到根路径**（自定义域名/用户页）：`WEB_BASE=/ npm run build:web`。
+
+**网页版与桌面版的差异**：
+- LLM/TTS 由浏览器直连你填写的接口（apiKey 存本地 IndexedDB）——目标接口须允许浏览器 **CORS**（OpenAI 官方端点默认不允许，需 CORS-friendly 网关/兼容服务）。
+- **神经 TTS（sherpa-onnx）不可用**（原生组件）；保留系统语音(Web Speech)与 API TTS。
+- 数据导出/导入走浏览器下载/选择文件；用户文件存浏览器，跨设备迁移用导出包。
+
 ## 🏗 架构
 
 ```
-electron/main/          主进程：LLM/TTS 客户端、casino-asset 协议、文件导入、模型下载、TTS 工作进程
+electron/main/          桌面主进程：LLM/TTS 客户端、casino-asset 协议、文件导入、模型下载、TTS 工作进程
 src/core/               平台核心（游戏无关）：CSPRNG、牌靴(可序列化)、人格、记忆、统计、成就、迁移、GameModule 契约
 src/games/blackjack/    21 点模块：规则引擎(三预设)、边注、基本策略(含投降/保险)、视角投影、prompt、会话编排
 src/ui/                 React UI：大厅、拟真牌桌、悬浮陪玩、全部管理面板、i18n(zh/en)
+src/web/                网页平台适配器：浏览器版 window.casino（idb/llm/assets/data/tts）+ Service Worker + PWA 入口
 ```
+
+`window.casino` 桥是平台抽象的唯一接缝：Electron 由 `electron/preload` 提供，网页由 `src/web/platform.ts` 提供，`src/` 其余代码两端共用、零改动。
 
 新增游戏 = 实现 `GameModule` 接口 + prompt 预设；AI 编排、人格、记忆、统计、场次全部复用。
 
