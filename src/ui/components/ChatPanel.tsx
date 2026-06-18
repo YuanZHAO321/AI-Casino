@@ -2,11 +2,16 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Avatar } from './Avatar'
 
-/** 右侧栏：牌桌桌聊 + 台面日志（陪玩在悬浮窗）。移动端 drawer 模式作底部抽屉。 */
+/** 右侧栏：牌桌桌聊 + 台面日志。variant：side=右栏 / inline=竖屏堆叠 / drawer=底部抽屉 */
 export function ChatPanel({
+  variant = 'side',
   drawerOpen = false,
   onClose
-}: { drawerOpen?: boolean; onClose?: () => void } = {}): React.JSX.Element {
+}: {
+  variant?: 'side' | 'inline' | 'drawer'
+  drawerOpen?: boolean
+  onClose?: () => void
+} = {}): React.JSX.Element {
   const t = useStore((s) => s.t)()
   const feed = useStore((s) => s.feed)
   const session = useStore((s) => s.session)
@@ -34,10 +39,12 @@ export function ChatPanel({
   }
 
   return (
-    <div className={`chat-panel ${drawerOpen ? 'drawer-open' : ''}`}>
-      <button className="drawer-handle" onClick={onClose} aria-label="close">
-        <span />
-      </button>
+    <div className={`chat-panel variant-${variant} ${drawerOpen ? 'drawer-open' : ''}`}>
+      {variant === 'drawer' && (
+        <button className="drawer-handle" onClick={onClose} aria-label="close">
+          <span />
+        </button>
+      )}
       <div className="chat-tabs">
         <button className="on">{t.chat.tableTalk}</button>
       </div>

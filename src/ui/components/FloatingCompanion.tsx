@@ -4,11 +4,16 @@ import { Avatar } from './Avatar'
 
 const POS_KEY = 'casino-companion-pos'
 
-/** 陪玩悬浮窗：可拖动、可折叠，像在耳边聊天。移动端 drawer 模式作底部抽屉。 */
+/** 陪玩面板。variant：side=可拖悬浮窗 / inline=竖屏堆叠块 / drawer=底部抽屉 */
 export function FloatingCompanion({
+  variant = 'side',
   drawerOpen = false,
   onClose
-}: { drawerOpen?: boolean; onClose?: () => void } = {}): React.JSX.Element | null {
+}: {
+  variant?: 'side' | 'inline' | 'drawer'
+  drawerOpen?: boolean
+  onClose?: () => void
+} = {}): React.JSX.Element | null {
   const t = useStore((s) => s.t)()
   const session = useStore((s) => s.session)
   const feed = useStore((s) => s.feed)
@@ -91,16 +96,19 @@ export function FloatingCompanion({
 
   return (
     <div
-      className={`companion-float ${collapsed ? 'collapsed' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
+      className={`companion-float variant-${variant} ${collapsed ? 'collapsed' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
       style={{ ['--cf-x' as string]: `${pos.x}px`, ['--cf-y' as string]: `${pos.y}px` }}
     >
-      <button className="drawer-handle" onClick={onClose} aria-label="close">
-        <span />
-      </button>
+      {variant === 'drawer' && (
+        <button className="drawer-handle" onClick={onClose} aria-label="close">
+          <span />
+        </button>
+      )}
       <div
         className="companion-float-head"
         onPointerDown={(e) => {
-          dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y }
+          // 仅悬浮窗（side）可拖；inline/drawer 由布局固定
+          if (variant === 'side') dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y }
         }}
       >
         <Avatar

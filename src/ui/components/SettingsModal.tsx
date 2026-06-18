@@ -3,6 +3,8 @@ import { useStore } from '../store'
 import { Modal } from './Modal'
 import { Avatar } from './Avatar'
 import { AppSettings, DEFAULT_CHIP_COLORS } from '../presets'
+import type { BackupContent } from '../../../electron/preload/api'
+import type { RoundRecord } from '@/core/types'
 import { RULE_PRESETS, RulePresetId, applyPreset, detectPreset } from '@/games/blackjack/rulePresets'
 import { DoubleRestriction } from '@/games/blackjack/types'
 
@@ -17,6 +19,8 @@ export function SettingsModal(): React.JSX.Element {
   const pushToast = useStore((s) => s.pushToast)
   const setModal = useStore((s) => s.setModal)
   const [exportSections, setExportSections] = useState<('api' | 'personas' | 'history')[]>([])
+  // 选择性导入：已读取的备份 + 勾选的模块/历史记录 id
+  const [imp, setImp] = useState<{ backup: BackupContent; modules: Set<string>; history: Set<string> } | null>(null)
   const [draft, setDraft] = useState<AppSettings>({
     ...settings,
     rules: { ...settings.rules },
@@ -31,6 +35,54 @@ export function SettingsModal(): React.JSX.Element {
 
   const patchAppearance = (p: Partial<AppSettings['appearance']>): void =>
     setDraft({ ...draft, appearance: { ...draft.appearance, ...p } })
+
+  /* ---- 选择性导入 ---- */
+  const MODULE_KEYS = ['profiles', 'personas', 'history', 'matches', 'achievements', 'reports', 'settings', 'memories', 'shoe']
+  const modLabel: Record<string, string> = {
+    profiles: t.settings.mod_profiles, personas: t.settings.mod_personas, history: t.settings.mod_history,
+    matches: t.settings.mod_matches, achievements: t.settings.mod_achievements, reports: t.settings.mod_reports,
+    settings: t.settings.mod_settings, memories: t.settings.mod_memories, shoe: t.settings.mod_shoe
+  }
+  const impHistory = (imp ? (imp.backup.data?.history as RoundRecord[] | undefined) : undefined) ?? []
+
+  const histLabel = (r: RoundRecord): string => {
+    const d = new Date(r.timestamp)
+    const when = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    if (r.bankrollEvent) return `${when} · ${t.settings.impFundEvent}`
+    const net = `${r.playerNet >= 0 ? '+' : ''}£${r.playerNet}`
+    return `${when} · ${t.table.roundLabel.replace('{n}', String(r.round))} · ${net}`
+  }
+
+  const openSelectiveImport = async (): Promise<void> => {
+    const read = window.casino.data.readBackup
+    if (!read) {
+      // 桌面端无选择性导入能力 → 退回整包导入
+      const r = await window.casino.data.import()
+      if (r.ok) { pushToast(t.settings.importDone, 'info'); setTimeout(() => window.location.reload(), 800) }
+      else if (r.error !== 'canceled') pushToast(`${r.error}`, 'error')
+      return
+    }
+    const res = await read()
+    if (!res.ok || !res.backup) { if (res.error !== 'canceled') pushToast(`${res.error}`, 'error'); return }
+    const data = res.backup.data ?? {}
+    const ids = (Array.isArray(data.history) ? (data.history as RoundRecord[]) : []).map((r) => r.id)
+    setImp({ backup: res.backup, modules: new Set(MODULE_KEYS.filter((k) => k in data)), history: new Set(ids) })
+  }
+
+  const confirmSelectiveImport = async (): Promise<void> => {
+    if (!imp || !window.casino.data.applyBackup) return
+    const res = await window.casino.data.applyBackup(imp.backup, {
+      modules: [...imp.modules],
+      historyIds: imp.modules.has('history') ? [...imp.history] : undefined
+    })
+    if (res.ok) { pushToast(t.settings.importDone, 'info'); setImp(null); setTimeout(() => window.location.reload(), 800) }
+    else pushToast(`${res.error}`, 'error')
+  }
+
+  const toggleModule = (k: string): void =>
+    setImp((s) => { if (!s) return s; const m = new Set(s.modules); m.has(k) ? m.delete(k) : m.add(k); return { ...s, modules: m } })
+  const toggleHistory = (id: string): void =>
+    setImp((s) => { if (!s) return s; const h = new Set(s.history); h.has(id) ? h.delete(id) : h.add(id); return { ...s, history: h } })
 
   const uploadTexture = async (key: 'feltUrl' | 'ambienceUrl' | 'cardBackUrl'): Promise<void> => {
     const res = await window.casino.files.import('image', 'custom')
@@ -175,6 +227,9 @@ export function SettingsModal(): React.JSX.Element {
           }}
         >
           {t.settings.importData}
+        </button>
+        <button className="btn-ghost" onClick={openSelectiveImport}>
+          {t.settings.selectiveImport}
         </button>
       </div>
       <div className="form-row">
@@ -441,6 +496,58 @@ export function SettingsModal(): React.JSX.Element {
       <div className="modal-actions">
         <button className="btn-primary" onClick={apply}>{t.panels.apply}</button>
       </div>
+
+      {imp && (
+        <div className="modal-backdrop" onClick={() => setImp(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>{t.settings.impTitle}</h2>
+              <button className="btn-close" onClick={() => setImp(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <h3>{t.settings.impModules}</h3>
+              <div className="seat-picker">
+                {MODULE_KEYS.filter((k) => k in (imp.backup.data ?? {})).map((k) => (
+                  <label key={k} className="check-chip">
+                    <input type="checkbox" checked={imp.modules.has(k)} onChange={() => toggleModule(k)} />
+                    {modLabel[k]}
+                  </label>
+                ))}
+              </div>
+
+              {imp.modules.has('history') && impHistory.length > 0 && (
+                <>
+                  <div className="import-history-head">
+                    <h3>{t.settings.impHistoryCount.replace('{n}', String(impHistory.length))}</h3>
+                    <span className="bet-quick">
+                      <button className="btn-mini" onClick={() => setImp((s) => (s ? { ...s, history: new Set(impHistory.map((r) => r.id)) } : s))}>
+                        {t.settings.impSelectAll}
+                      </button>
+                      <button className="btn-mini btn-dim" onClick={() => setImp((s) => (s ? { ...s, history: new Set() } : s))}>
+                        {t.settings.impClear}
+                      </button>
+                    </span>
+                  </div>
+                  <div className="import-history-list">
+                    {[...impHistory].sort((a, b) => a.timestamp - b.timestamp).map((r) => (
+                      <label key={r.id} className="check-row">
+                        <input type="checkbox" checked={imp.history.has(r.id)} onChange={() => toggleHistory(r.id)} />
+                        <span>{histLabel(r)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button className="btn-ghost" onClick={() => setImp(null)}>{t.settings.impCancel}</button>
+              <button className="btn-primary" disabled={imp.modules.size === 0} onClick={confirmSelectiveImport}>
+                {t.settings.impApply}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   )
 }

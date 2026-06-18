@@ -14,10 +14,11 @@ export const ASSET_CACHE = 'casino-assets'
 const ROOT_DIRS = ['custom', 'music'] as const
 export type AssetDir = (typeof ROOT_DIRS)[number]
 
-// audio/* 放宽：Safari 对 m4a/aac 等 MIME 标注不一，限定具体类型会过滤掉合法文件
+// 同时给扩展名与 MIME：iOS「文件」App 据扩展名放行，只给 audio/* 时会被误导到
+// 照片/视频选择器（用户只能选到 .mov）。扩展名 + audio/* 才能在 Files 里选到 mp3/wav。
 const ACCEPT: Record<string, string> = {
-  image: 'image/png,image/jpeg,image/webp,image/gif',
-  audio: 'audio/*'
+  image: '.png,.jpg,.jpeg,.webp,.gif,image/*',
+  audio: '.mp3,.m4a,.aac,.wav,.oga,.ogg,.flac,.opus,.weba,audio/*'
 }
 
 function makeFileName(original: string): string {

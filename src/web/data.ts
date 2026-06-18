@@ -8,6 +8,7 @@
 import { idbGet, idbSet } from './idb'
 import { listCustom, readCustom, putAsset } from './assets'
 import { pickFile } from './filepick'
+import type { BackupContent, ImportSelection } from '../../electron/preload/api.d'
 
 export type ExportSection = 'all' | 'api' | 'personas' | 'history'
 
@@ -169,6 +170,62 @@ export async function importData(): Promise<{ ok: boolean; sections?: ExportSect
       }
     }
     return { ok: true, sections }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/* ---------- 选择性导入：读备份 → UI 多选 → 按选择应用 ---------- */
+
+const ARRAY_KEYS = ['profiles', 'personas', 'history', 'matches', 'achievements', 'reports']
+
+export async function readBackup(): Promise<{ ok: boolean; backup?: BackupContent; error?: string }> {
+  const file = await pickFile('application/json,.json')
+  if (!file) return { ok: false, error: 'canceled' }
+  try {
+    const backup = JSON.parse(await file.text()) as Partial<BackupContent>
+    if (backup.app !== 'ai-casino' || !backup.data || typeof backup.data !== 'object') {
+      return { ok: false, error: '不是有效的 AI Casino 备份文件' }
+    }
+    return { ok: true, backup: backup as BackupContent }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function applyBackup(
+  backup: BackupContent,
+  selection: ImportSelection
+): Promise<{ ok: boolean; imported?: string[]; error?: string }> {
+  try {
+    const data = backup.data ?? {}
+    for (const key of selection.modules) {
+      if (!(key in data)) continue
+      if (ARRAY_KEYS.includes(key)) {
+        let incoming = (Array.isArray(data[key]) ? data[key] : []) as { id?: string; timestamp?: number }[]
+        if (key === 'history' && selection.historyIds) {
+          const want = new Set(selection.historyIds)
+          incoming = incoming.filter((r) => r.id && want.has(r.id))
+        }
+        const existing = ((await idbGet(key)) as { id?: string }[]) ?? []
+        let merged = mergeById(existing, incoming)
+        if (key === 'history') {
+          merged = merged.sort((a, b) => ((a as { timestamp?: number }).timestamp ?? 0) - ((b as { timestamp?: number }).timestamp ?? 0))
+        }
+        await idbSet(key, merged)
+      } else {
+        // settings/memories/shoe 等对象/快照：整体写入（用户已勾选）
+        await idbSet(key, data[key])
+      }
+    }
+    // 资产文件全部恢复（头像/纹理引用需要）
+    if (Array.isArray(backup.customFiles)) {
+      for (const f of backup.customFiles) {
+        const name = pathBasename(f.name)
+        if (name && typeof f.base64 === 'string') await putAsset(`custom/${name}`, base64ToBlob(f.base64))
+      }
+    }
+    return { ok: true, imported: selection.modules }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

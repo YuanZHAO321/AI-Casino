@@ -12,6 +12,35 @@ import { AchievementsModal } from './ui/components/AchievementsModal'
 import { BgmModal } from './ui/components/BgmModal'
 import { TtsModal } from './ui/components/TtsModal'
 
+type LayoutMode = 'side' | 'stacked' | 'drawer'
+
+/** 据视口与竖屏设置判定布局：side=左右并排 / stacked=上下常驻 / drawer=底部抽屉呼出 */
+function useLayoutMode(portrait: 'drawer' | 'stacked'): LayoutMode {
+  const compute = (): LayoutMode => {
+    if (typeof window === 'undefined') return 'side'
+    const w = window.innerWidth
+    const h = window.innerHeight
+    const landscape = w > h
+    const small = w < 880 || (landscape && h <= 500) // 窄屏 或 大屏手机横屏
+    if (!small) return 'side'
+    if (!landscape && portrait === 'stacked') return 'stacked'
+    return 'drawer'
+  }
+  const [mode, setMode] = useState<LayoutMode>(compute)
+  useEffect(() => {
+    const on = (): void => setMode(compute())
+    on()
+    window.addEventListener('resize', on)
+    window.addEventListener('orientationchange', on)
+    return () => {
+      window.removeEventListener('resize', on)
+      window.removeEventListener('orientationchange', on)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portrait])
+  return mode
+}
+
 export default function App(): React.JSX.Element {
   const loaded = useStore((s) => s.loaded)
   const init = useStore((s) => s.init)
@@ -28,6 +57,8 @@ export default function App(): React.JSX.Element {
   const toasts = useStore((s) => s.toasts)
   const dismissToast = useStore((s) => s.dismissToast)
 
+  const layoutMode = useLayoutMode(settings.portraitLayout)
+
   // 移动端：底部抽屉当前打开的面板；顶栏菜单展开态
   const [mobilePanel, setMobilePanel] = useState<'none' | 'chat' | 'companion'>('none')
   const [navOpen, setNavOpen] = useState(false)
@@ -36,11 +67,11 @@ export default function App(): React.JSX.Element {
     init()
   }, [init])
 
-  // 切屏/开模态时收起抽屉与菜单
+  // 切屏/开模态/换布局时收起抽屉与菜单
   useEffect(() => {
     setMobilePanel('none')
     setNavOpen(false)
-  }, [screen, modal])
+  }, [screen, modal, layoutMode])
 
   if (!loaded) return <div className="loading">♠ ♥ ♦ ♣</div>
 
@@ -54,7 +85,7 @@ export default function App(): React.JSX.Element {
   return (
     <div
       className="app"
-      data-portrait-layout={settings.portraitLayout}
+      data-mode={layoutMode}
       style={{ ['--felt-texture' as string]: `url("${feltUrl}")` }}
     >
       {/* 环境背景层（模糊/暗度可调） */}
@@ -110,35 +141,56 @@ export default function App(): React.JSX.Element {
             </nav>
           </header>
 
-          <main className="layout">
+          <main className={`layout layout-${layoutMode}`}>
             <Table />
-            <ChatPanel
-              drawerOpen={mobilePanel === 'chat'}
-              onClose={() => setMobilePanel('none')}
-            />
-          </main>
-          <FloatingCompanion
-            drawerOpen={mobilePanel === 'companion'}
-            onClose={() => setMobilePanel('none')}
-          />
-
-          {/* 移动端底部呼出按钮（仅 drawer 模式由 CSS 显示） */}
-          <div className="mobile-dock">
-            <button
-              className={mobilePanel === 'chat' ? 'on' : ''}
-              onClick={() => setMobilePanel((p) => (p === 'chat' ? 'none' : 'chat'))}
-            >
-              💬 {t.chat.tableTalk}
-            </button>
-            {hasCompanions && (
-              <button
-                className={mobilePanel === 'companion' ? 'on' : ''}
-                onClick={() => setMobilePanel((p) => (p === 'companion' ? 'none' : 'companion'))}
-              >
-                🗣 {t.chat.companions}
-              </button>
+            {layoutMode === 'side' && <ChatPanel variant="side" />}
+            {layoutMode === 'stacked' && (
+              <div className="stack-panels">
+                <ChatPanel variant="inline" />
+                {hasCompanions && <FloatingCompanion variant="inline" />}
+              </div>
             )}
-          </div>
+          </main>
+
+          {/* 桌面悬浮陪玩 */}
+          {layoutMode === 'side' && <FloatingCompanion variant="side" />}
+
+          {/* 移动端底部抽屉 + 呼出按钮 */}
+          {layoutMode === 'drawer' && (
+            <>
+              {mobilePanel !== 'none' && (
+                <div className="drawer-scrim" onClick={() => setMobilePanel('none')} />
+              )}
+              <ChatPanel
+                variant="drawer"
+                drawerOpen={mobilePanel === 'chat'}
+                onClose={() => setMobilePanel('none')}
+              />
+              <FloatingCompanion
+                variant="drawer"
+                drawerOpen={mobilePanel === 'companion'}
+                onClose={() => setMobilePanel('none')}
+              />
+              {!modal && (
+                <div className="mobile-dock">
+                  <button
+                    className={mobilePanel === 'chat' ? 'on' : ''}
+                    onClick={() => setMobilePanel((p) => (p === 'chat' ? 'none' : 'chat'))}
+                  >
+                    💬 {t.chat.tableTalk}
+                  </button>
+                  {hasCompanions && (
+                    <button
+                      className={mobilePanel === 'companion' ? 'on' : ''}
+                      onClick={() => setMobilePanel((p) => (p === 'companion' ? 'none' : 'companion'))}
+                    >
+                      🗣 {t.chat.companions}
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </>
       )}
 

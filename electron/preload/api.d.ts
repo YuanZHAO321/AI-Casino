@@ -24,6 +24,22 @@ export interface ImportResult {
   error?: string
 }
 
+/** 解析后的备份内容（用于选择性导入） */
+export interface BackupContent {
+  app: string
+  version?: number
+  exportedAt?: number
+  sections?: string[]
+  data: Record<string, unknown>
+  customFiles?: { name: string; base64: string }[]
+}
+
+/** 选择性导入：选哪些模块 + （history 时）选哪些记录 id */
+export interface ImportSelection {
+  modules: string[]
+  historyIds?: string[]
+}
+
 export interface TtsModelInfo {
   id: string
   type: 'kokoro' | 'vits'
@@ -55,6 +71,12 @@ declare global {
           sections: ('all' | 'api' | 'personas' | 'history')[]
         ) => Promise<{ ok: boolean; path?: string; error?: string }>
         import: () => Promise<{ ok: boolean; sections?: string[]; error?: string }>
+        /** 选择性导入（可选，网页端实现）：先读备份，再按选择应用 */
+        readBackup?: () => Promise<{ ok: boolean; backup?: BackupContent; error?: string }>
+        applyBackup?: (
+          backup: BackupContent,
+          selection: ImportSelection
+        ) => Promise<{ ok: boolean; imported?: string[]; error?: string }>
       }
       tts: {
         models: () => Promise<TtsModelInfo[]>

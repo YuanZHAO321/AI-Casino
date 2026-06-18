@@ -6,7 +6,7 @@
 import { idbGet, idbSet } from './idb'
 import { chatCompletion, listModels } from './llm'
 import { importFile, removeFile, type AssetDir } from './assets'
-import { exportData, importData, type ExportSection } from './data'
+import { exportData, importData, readBackup, applyBackup, type ExportSection } from './data'
 import * as tts from './tts'
 import type { LlmChatRequest } from '../../electron/preload/api.d'
 
@@ -28,7 +28,9 @@ export function installWebPlatform(): void {
     },
     data: {
       export: (sections) => exportData(sections as ExportSection[]),
-      import: () => importData()
+      import: () => importData(),
+      readBackup: () => readBackup(),
+      applyBackup: (backup, selection) => applyBackup(backup, selection)
     },
     tts: {
       models: () => tts.listModels(),

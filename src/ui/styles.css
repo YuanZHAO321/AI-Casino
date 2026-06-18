@@ -1367,15 +1367,84 @@ input, textarea, select { user-select: text; }
 html { -webkit-text-size-adjust: 100%; }
 .app { overscroll-behavior: none; }
 
-/* 默认（桌面）隐藏移动控件 */
-.nav-toggle, .drawer-handle, .mobile-dock { display: none; }
+/* z-index 阶梯（修正：模态/提示必须高于一切移动控件） */
+.topbar { z-index: 30; }            /* 抬到 layout(1) 之上，否则 ☰ 下拉被牌桌盖住 */
+.modal-backdrop { z-index: 1000; }  /* 覆盖前面 z-index:50 */
+.toasts { z-index: 1100; }
 
-/* ---------- 移动/窄屏（drawer 基线 + 顶栏收纳）：窄宽度 或 矮横屏（大屏手机横屏） ---------- */
-@media (max-width: 879px), (orientation: landscape) and (max-height: 500px) {
-  /* 顶栏收紧，导航收进 ☰ */
+/* 桌面默认隐藏移动控件（这些元素仅在对应模式下被渲染，这里再兜底） */
+.nav-toggle { display: none; }
+
+/* 牌桌底部（发牌/行动区）永不被裁切：可收缩座位区 + 固定底栏 */
+.seats-row { min-height: 0; }
+.table-bottom { flex-shrink: 0; }
+
+/* ---------- 布局变体（由 JS layoutMode 选定，结构靠 class 而非媒体查询） ---------- */
+
+/* stacked：牌桌在上、聊天/陪玩常驻在下 */
+.layout-stacked { flex-direction: column; }
+.layout-stacked .table-wrap { flex: 1 1 auto; min-height: 0; }
+.stack-panels {
+  display: flex; flex-direction: column; gap: 0;
+  flex: 0 0 auto; min-height: 0; max-height: 56dvh;
+  border-top: 1px solid var(--gold);
+}
+.chat-panel.variant-inline,
+.companion-float.variant-inline {
+  position: static; left: auto; top: auto; right: auto; transform: none;
+  width: 100%; height: auto; flex: 1 1 0; min-height: 0;
+  border-left: none; border-radius: 0; box-shadow: none; z-index: auto;
+}
+.companion-float.variant-inline { border-top: 1px solid #3a2c1c; overflow: hidden; }
+.companion-float.variant-inline.collapsed { width: 100%; }
+
+/* drawer：底部半屏抽屉 + 呼出按钮 + 遮罩 */
+.chat-panel.variant-drawer,
+.companion-float.variant-drawer {
+  position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+  width: 100%; height: auto; max-height: 70dvh;
+  border-left: none; border-top: 1px solid var(--gold); border-radius: 16px 16px 0 0;
+  transform: translateY(110%); transition: transform 0.28s ease-out;
+  z-index: 90; box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.companion-float.variant-drawer { left: 0; top: auto; }
+.companion-float.variant-drawer.collapsed { width: 100%; }
+.chat-panel.variant-drawer.drawer-open,
+.companion-float.variant-drawer.drawer-open { transform: translateY(0); }
+.variant-drawer .companion-float-head { cursor: default; }
+/* 抽屉/堆叠里陪玩消息区按可用空间伸缩，而非固定高度 */
+.variant-inline .companion-float-feed,
+.variant-drawer .companion-float-feed { min-height: 60px; max-height: none; flex: 1 1 auto; }
+
+.drawer-handle {
+  display: block; width: 100%; border: none; background: transparent;
+  padding: 10px 0 6px; cursor: pointer;
+}
+.drawer-handle span {
+  display: block; width: 44px; height: 5px; margin: 0 auto;
+  background: var(--gold); border-radius: 3px; opacity: 0.7;
+}
+
+.drawer-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 88; }
+
+.mobile-dock {
+  display: flex; gap: 10px; position: fixed; z-index: 95;  /* 高于抽屉(90)，亮起按钮可再点关闭 */
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.mobile-dock button {
+  background: linear-gradient(180deg, #2a2014, #1a130c);
+  border: 1px solid var(--gold); color: var(--gold-bright);
+  border-radius: 22px; padding: 11px 18px; font-size: 13px; cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.mobile-dock button.on { background: var(--gold); color: var(--ink); }
+
+/* ---------- 顶栏收纳：窄于 1080（含 iPad 横屏）收进 ☰ 菜单 ---------- */
+@media (max-width: 1080px) {
   .topbar {
-    gap: 10px;
-    padding: 8px 12px;
+    gap: 10px; padding: 8px 12px;
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
   }
@@ -1386,7 +1455,7 @@ html { -webkit-text-size-adjust: 100%; }
   .btn-lobby { padding: 6px 8px; }
   .nav-toggle { display: inline-flex; align-items: center; justify-content: center; font-size: 18px; padding: 6px 12px; }
   .topnav {
-    position: absolute; top: 100%; right: 8px; z-index: 80;
+    position: absolute; top: 100%; right: 8px; z-index: 60;
     flex-direction: column; gap: 4px; display: none;
     background: linear-gradient(180deg, #241a10, #1a130c);
     border: 1px solid #4a3a26; border-radius: 8px; padding: 8px;
@@ -1394,79 +1463,39 @@ html { -webkit-text-size-adjust: 100%; }
   }
   .topnav.open { display: flex; }
   .topnav button { width: 168px; text-align: left; padding: 11px 12px; font-size: 13px; }
+}
 
-  /* 牌桌占满，纵向收紧 */
+/* ---------- 矮视口（iPad 横屏 / 小笔记本）：纵向收紧，保证发牌键不被裁 ---------- */
+@media (max-height: 860px) {
+  .felt { padding: 22px 40px 14px; }
+  .felt-arc-text { margin-bottom: 4px; }
+  .dealer-zone { min-height: 116px; }
+  .dealer-cards { min-height: 88px; }
+  .table-bottom { min-height: 72px; }
+}
+
+/* ---------- 窄屏触控适配 ---------- */
+@media (max-width: 720px) {
   .table-wrap { padding: 8px; }
   .felt { padding: 16px 14px 12px; border-radius: 90px 90px 14px 14px; }
   .felt-arc-text { font-size: 11px; letter-spacing: 3px; }
-  .dealer-zone { min-height: 110px; }
-  .dealer-cards { min-height: 84px; }
-
-  /* 下注区换行，避免横向溢出 */
+  .dealer-zone { min-height: 108px; }
   .bet-main { flex-wrap: wrap; justify-content: center; gap: 10px; padding: 10px; }
   .btn-deal { margin-left: 0; }
   .action-bar { flex-wrap: wrap; justify-content: center; gap: 10px; }
   .btn-action { padding: 12px 22px; }
   .btn-action, .btn-deal { min-height: 44px; }
   .btn-mini { padding: 8px 12px; font-size: 12px; }
-
-  /* 桌聊/陪玩 → 底部抽屉半屏 */
-  .chat-panel, .companion-float {
-    position: fixed; left: 0; right: 0; bottom: 0; top: auto;
-    width: 100%; height: auto; max-height: 62dvh;
-    border-left: none; border-top: 1px solid var(--gold);
-    border-radius: 16px 16px 0 0;
-    transform: translateY(110%);
-    transition: transform 0.28s ease-out;
-    z-index: 90;
-    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-  .companion-float.collapsed { width: 100%; }
-  .chat-panel.drawer-open, .companion-float.drawer-open { transform: translateY(0); }
-  .companion-float .companion-float-head { cursor: default; }
-
-  .drawer-handle {
-    display: block; width: 100%; border: none; background: transparent;
-    padding: 9px 0 5px; cursor: pointer;
-  }
-  .drawer-handle span {
-    display: block; width: 40px; height: 4px; margin: 0 auto;
-    background: var(--gold); border-radius: 2px; opacity: 0.7;
-  }
-
-  /* 底部呼出按钮 */
-  .mobile-dock {
-    display: flex; gap: 10px; position: fixed; z-index: 85;
-    left: 50%; transform: translateX(-50%);
-    bottom: calc(10px + env(safe-area-inset-bottom));
-  }
-  .mobile-dock button {
-    background: linear-gradient(180deg, #2a2014, #1a130c);
-    border: 1px solid var(--gold); color: var(--gold-bright);
-    border-radius: 22px; padding: 10px 16px; font-size: 13px; cursor: pointer;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  }
-  .mobile-dock button.on { background: var(--gold); color: var(--ink); }
-
-  /* 模态适配窄屏 */
   .modal { max-width: 96vw; max-height: 90dvh; }
   .modal-wide { width: 96vw; }
   .form-row { flex-wrap: wrap; }
   .form-row > label { width: auto; }
 }
 
-/* ---------- 竖屏 + stacked 设置：牌桌上、聊天下常驻（覆盖 drawer 基线） ---------- */
-@media (max-width: 879px) and (orientation: portrait) {
-  .app[data-portrait-layout='stacked'] .layout { flex-direction: column; }
-  .app[data-portrait-layout='stacked'] .table-wrap { flex: 1 1 auto; min-height: 0; }
-  .app[data-portrait-layout='stacked'] .chat-panel,
-  .app[data-portrait-layout='stacked'] .companion-float {
-    position: static; transform: none; left: auto; top: auto; right: auto;
-    width: 100%; max-height: 32dvh; flex: 0 0 auto;
-    border-radius: 0; border-left: none; border-top: 1px solid #3a2c1c;
-    box-shadow: none; z-index: auto; padding-bottom: 0;
-  }
-  .app[data-portrait-layout='stacked'] .drawer-handle,
-  .app[data-portrait-layout='stacked'] .mobile-dock { display: none; }
+/* 选择性导入：历史记录多选列表 */
+.import-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0 6px; }
+.import-history-list {
+  max-height: 38vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid #3a2c1c; border-radius: 8px; padding: 8px;
 }
+.import-history-list .check-row { font-size: 12px; gap: 8px; }
