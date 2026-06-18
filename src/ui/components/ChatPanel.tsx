@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Avatar } from './Avatar'
 
-/** 右侧栏：牌桌桌聊 + 台面日志（陪玩在悬浮窗） */
-export function ChatPanel(): React.JSX.Element {
+/** 右侧栏：牌桌桌聊 + 台面日志（陪玩在悬浮窗）。移动端 drawer 模式作底部抽屉。 */
+export function ChatPanel({
+  drawerOpen = false,
+  onClose
+}: { drawerOpen?: boolean; onClose?: () => void } = {}): React.JSX.Element {
   const t = useStore((s) => s.t)()
   const feed = useStore((s) => s.feed)
   const session = useStore((s) => s.session)
@@ -31,7 +34,10 @@ export function ChatPanel(): React.JSX.Element {
   }
 
   return (
-    <div className="chat-panel">
+    <div className={`chat-panel ${drawerOpen ? 'drawer-open' : ''}`}>
+      <button className="drawer-handle" onClick={onClose} aria-label="close">
+        <span />
+      </button>
       <div className="chat-tabs">
         <button className="on">{t.chat.tableTalk}</button>
       </div>

@@ -142,6 +142,8 @@ export interface AppSettings {
   /** 桌上显示赌场盈亏牌子 */
   showHousePlaque: boolean
   startup: 'ask' | 'continue' | 'new'
+  /** 竖屏（手机/平板）聊天面板呈现：drawer=底部抽屉按钮唤出；stacked=牌桌上聊天下常驻 */
+  portraitLayout: 'drawer' | 'stacked'
   bankroll: number
   appearance: AppearanceSettings
   audio: AudioSettings
@@ -166,6 +168,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shoeMode: 'persist',
   showHousePlaque: true,
   startup: 'ask',
+  portraitLayout: 'drawer',
   bankroll: 1000,
   appearance: {
     ambienceBlur: 8,

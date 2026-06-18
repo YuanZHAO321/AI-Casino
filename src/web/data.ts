@@ -7,6 +7,7 @@
  */
 import { idbGet, idbSet } from './idb'
 import { listCustom, readCustom, putAsset } from './assets'
+import { pickFile } from './filepick'
 
 export type ExportSection = 'all' | 'api' | 'personas' | 'history'
 
@@ -115,28 +116,6 @@ function triggerDownload(blob: Blob, fileName: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function pickJson(): Promise<File | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'application/json,.json'
-    input.style.display = 'none'
-    let done = false
-    const finish = (f: File | null): void => {
-      if (done) return
-      done = true
-      input.remove()
-      resolve(f)
-    }
-    input.onchange = () => finish(input.files?.[0] ?? null)
-    window.addEventListener('focus', () => setTimeout(() => finish(input.files?.[0] ?? null), 500), {
-      once: true
-    })
-    document.body.appendChild(input)
-    input.click()
-  })
-}
-
 /** 按 id 合并数组（导入项覆盖同 id 旧项，新项追加） */
 function mergeById<T extends { id?: string }>(existing: T[], incoming: T[]): T[] {
   const map = new Map<string, T>()
@@ -146,7 +125,7 @@ function mergeById<T extends { id?: string }>(existing: T[], incoming: T[]): T[]
 }
 
 export async function importData(): Promise<{ ok: boolean; sections?: ExportSection[]; error?: string }> {
-  const file = await pickJson()
+  const file = await pickFile('application/json,.json')
   if (!file) return { ok: false, error: 'canceled' }
   try {
     const backup = JSON.parse(await file.text()) as Partial<BackupFile>

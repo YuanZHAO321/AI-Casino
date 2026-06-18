@@ -4,8 +4,11 @@ import { Avatar } from './Avatar'
 
 const POS_KEY = 'casino-companion-pos'
 
-/** 陪玩悬浮窗：可拖动、可折叠，像在耳边聊天 */
-export function FloatingCompanion(): React.JSX.Element | null {
+/** 陪玩悬浮窗：可拖动、可折叠，像在耳边聊天。移动端 drawer 模式作底部抽屉。 */
+export function FloatingCompanion({
+  drawerOpen = false,
+  onClose
+}: { drawerOpen?: boolean; onClose?: () => void } = {}): React.JSX.Element | null {
   const t = useStore((s) => s.t)()
   const session = useStore((s) => s.session)
   const feed = useStore((s) => s.feed)
@@ -36,8 +39,9 @@ export function FloatingCompanion(): React.JSX.Element | null {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [items.length])
 
+  // 拖拽用 Pointer Events：鼠标与触屏通用
   useEffect(() => {
-    const move = (e: MouseEvent): void => {
+    const move = (e: PointerEvent): void => {
       if (!dragRef.current) return
       const x = Math.min(Math.max(0, e.clientX - dragRef.current.dx), window.innerWidth - 80)
       const y = Math.min(Math.max(40, e.clientY - dragRef.current.dy), window.innerHeight - 60)
@@ -49,13 +53,30 @@ export function FloatingCompanion(): React.JSX.Element | null {
         localStorage.setItem(POS_KEY, JSON.stringify(pos))
       }
     }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
     return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
     }
   }, [pos])
+
+  // 视口缩放/转屏时把悬浮窗夹回可见区域，避免飘到屏幕外
+  useEffect(() => {
+    const clamp = (): void => {
+      setPos((p) => ({
+        x: Math.min(Math.max(0, p.x), window.innerWidth - 80),
+        y: Math.min(Math.max(40, p.y), window.innerHeight - 60)
+      }))
+    }
+    clamp()
+    window.addEventListener('resize', clamp)
+    window.addEventListener('orientationchange', clamp)
+    return () => {
+      window.removeEventListener('resize', clamp)
+      window.removeEventListener('orientationchange', clamp)
+    }
+  }, [])
 
   if (companions.length === 0) return null
 
@@ -69,10 +90,16 @@ export function FloatingCompanion(): React.JSX.Element | null {
   }
 
   return (
-    <div className={`companion-float ${collapsed ? 'collapsed' : ''}`} style={{ left: pos.x, top: pos.y }}>
+    <div
+      className={`companion-float ${collapsed ? 'collapsed' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
+      style={{ ['--cf-x' as string]: `${pos.x}px`, ['--cf-y' as string]: `${pos.y}px` }}
+    >
+      <button className="drawer-handle" onClick={onClose} aria-label="close">
+        <span />
+      </button>
       <div
         className="companion-float-head"
-        onMouseDown={(e) => {
+        onPointerDown={(e) => {
           dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y }
         }}
       >

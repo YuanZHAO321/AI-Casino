@@ -1140,6 +1140,9 @@ input, textarea, select { user-select: text; }
 /* ---------- 陪玩悬浮窗 ---------- */
 .companion-float {
   position: fixed;
+  /* 位置走 CSS 变量（组件设置），便于移动端媒体查询覆盖 left/top */
+  left: var(--cf-x, auto);
+  top: var(--cf-y, auto);
   width: 330px;
   z-index: 40;
   background: linear-gradient(180deg, rgba(30, 23, 14, 0.97), rgba(20, 15, 9, 0.97));
@@ -1351,3 +1354,119 @@ input, textarea, select { user-select: text; }
 /* 历史记录牌面 */
 .rec-cards { font-style: normal; color: var(--gold-bright); letter-spacing: 0.5px; }
 .rec-dealer { color: #cdc5ae; }
+
+/* ===================== 平台 & 多设备响应式 ===================== */
+
+/* 网页版无 mac 红绿灯：去掉为标题栏预留的左 padding；app-region 仅 Electron 有意义 */
+[data-platform='web'] .topbar { padding-left: 16px; -webkit-app-region: no-drag; }
+
+/* 移动端动态视口高度（地址栏伸缩），带 100% 回退 */
+@supports (height: 100dvh) {
+  html, body, #root { height: 100dvh; }
+}
+html { -webkit-text-size-adjust: 100%; }
+.app { overscroll-behavior: none; }
+
+/* 默认（桌面）隐藏移动控件 */
+.nav-toggle, .drawer-handle, .mobile-dock { display: none; }
+
+/* ---------- 移动/窄屏（drawer 基线 + 顶栏收纳）：窄宽度 或 矮横屏（大屏手机横屏） ---------- */
+@media (max-width: 879px), (orientation: landscape) and (max-height: 500px) {
+  /* 顶栏收紧，导航收进 ☰ */
+  .topbar {
+    gap: 10px;
+    padding: 8px 12px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+  .shoe-info { display: none; }
+  .brand h1 { font-size: 16px; letter-spacing: 1px; }
+  .brand span { display: none; }
+  .bankroll-display { font-size: 12px; }
+  .btn-lobby { padding: 6px 8px; }
+  .nav-toggle { display: inline-flex; align-items: center; justify-content: center; font-size: 18px; padding: 6px 12px; }
+  .topnav {
+    position: absolute; top: 100%; right: 8px; z-index: 80;
+    flex-direction: column; gap: 4px; display: none;
+    background: linear-gradient(180deg, #241a10, #1a130c);
+    border: 1px solid #4a3a26; border-radius: 8px; padding: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+  .topnav.open { display: flex; }
+  .topnav button { width: 168px; text-align: left; padding: 11px 12px; font-size: 13px; }
+
+  /* 牌桌占满，纵向收紧 */
+  .table-wrap { padding: 8px; }
+  .felt { padding: 16px 14px 12px; border-radius: 90px 90px 14px 14px; }
+  .felt-arc-text { font-size: 11px; letter-spacing: 3px; }
+  .dealer-zone { min-height: 110px; }
+  .dealer-cards { min-height: 84px; }
+
+  /* 下注区换行，避免横向溢出 */
+  .bet-main { flex-wrap: wrap; justify-content: center; gap: 10px; padding: 10px; }
+  .btn-deal { margin-left: 0; }
+  .action-bar { flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .btn-action { padding: 12px 22px; }
+  .btn-action, .btn-deal { min-height: 44px; }
+  .btn-mini { padding: 8px 12px; font-size: 12px; }
+
+  /* 桌聊/陪玩 → 底部抽屉半屏 */
+  .chat-panel, .companion-float {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+    width: 100%; height: auto; max-height: 62dvh;
+    border-left: none; border-top: 1px solid var(--gold);
+    border-radius: 16px 16px 0 0;
+    transform: translateY(110%);
+    transition: transform 0.28s ease-out;
+    z-index: 90;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .companion-float.collapsed { width: 100%; }
+  .chat-panel.drawer-open, .companion-float.drawer-open { transform: translateY(0); }
+  .companion-float .companion-float-head { cursor: default; }
+
+  .drawer-handle {
+    display: block; width: 100%; border: none; background: transparent;
+    padding: 9px 0 5px; cursor: pointer;
+  }
+  .drawer-handle span {
+    display: block; width: 40px; height: 4px; margin: 0 auto;
+    background: var(--gold); border-radius: 2px; opacity: 0.7;
+  }
+
+  /* 底部呼出按钮 */
+  .mobile-dock {
+    display: flex; gap: 10px; position: fixed; z-index: 85;
+    left: 50%; transform: translateX(-50%);
+    bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+  .mobile-dock button {
+    background: linear-gradient(180deg, #2a2014, #1a130c);
+    border: 1px solid var(--gold); color: var(--gold-bright);
+    border-radius: 22px; padding: 10px 16px; font-size: 13px; cursor: pointer;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  }
+  .mobile-dock button.on { background: var(--gold); color: var(--ink); }
+
+  /* 模态适配窄屏 */
+  .modal { max-width: 96vw; max-height: 90dvh; }
+  .modal-wide { width: 96vw; }
+  .form-row { flex-wrap: wrap; }
+  .form-row > label { width: auto; }
+}
+
+/* ---------- 竖屏 + stacked 设置：牌桌上、聊天下常驻（覆盖 drawer 基线） ---------- */
+@media (max-width: 879px) and (orientation: portrait) {
+  .app[data-portrait-layout='stacked'] .layout { flex-direction: column; }
+  .app[data-portrait-layout='stacked'] .table-wrap { flex: 1 1 auto; min-height: 0; }
+  .app[data-portrait-layout='stacked'] .chat-panel,
+  .app[data-portrait-layout='stacked'] .companion-float {
+    position: static; transform: none; left: auto; top: auto; right: auto;
+    width: 100%; max-height: 32dvh; flex: 0 0 auto;
+    border-radius: 0; border-left: none; border-top: 1px solid #3a2c1c;
+    box-shadow: none; z-index: auto; padding-bottom: 0;
+  }
+  .app[data-portrait-layout='stacked'] .drawer-handle,
+  .app[data-portrait-layout='stacked'] .mobile-dock { display: none; }
+}

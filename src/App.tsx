@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useStore } from './ui/store'
 import { Lobby } from './ui/components/Lobby'
 import { Table } from './ui/components/Table'
@@ -24,12 +24,23 @@ export default function App(): React.JSX.Element {
   const setModal = useStore((s) => s.setModal)
   const backToLobby = useStore((s) => s.backToLobby)
   const currentMatch = useStore((s) => s.currentMatch)
+  const session = useStore((s) => s.session)
   const toasts = useStore((s) => s.toasts)
   const dismissToast = useStore((s) => s.dismissToast)
+
+  // 移动端：底部抽屉当前打开的面板；顶栏菜单展开态
+  const [mobilePanel, setMobilePanel] = useState<'none' | 'chat' | 'companion'>('none')
+  const [navOpen, setNavOpen] = useState(false)
 
   useEffect(() => {
     init()
   }, [init])
+
+  // 切屏/开模态时收起抽屉与菜单
+  useEffect(() => {
+    setMobilePanel('none')
+    setNavOpen(false)
+  }, [screen, modal])
 
   if (!loaded) return <div className="loading">♠ ♥ ♦ ♣</div>
 
@@ -38,8 +49,14 @@ export default function App(): React.JSX.Element {
   const feltUrl = ap.feltUrl ?? 'textures/felt.png'
   const match = currentMatch()
 
+  const hasCompanions = (session?.companions?.length ?? 0) > 0
+
   return (
-    <div className="app" style={{ ['--felt-texture' as string]: `url("${feltUrl}")` }}>
+    <div
+      className="app"
+      data-portrait-layout={settings.portraitLayout}
+      style={{ ['--felt-texture' as string]: `url("${feltUrl}")` }}
+    >
       {/* 环境背景层（模糊/暗度可调） */}
       <div
         className="app-bg"
@@ -75,7 +92,14 @@ export default function App(): React.JSX.Element {
             <div className="bankroll-display">
               {t.table.bankroll} <strong>£{settings.bankroll}</strong>
             </div>
-            <nav className="topnav">
+            <button
+              className="btn-ghost nav-toggle"
+              aria-label="menu"
+              onClick={() => setNavOpen((o) => !o)}
+            >
+              ☰
+            </button>
+            <nav className={`topnav ${navOpen ? 'open' : ''}`}>
               <button onClick={() => setModal('profiles')}>{t.panels.profiles}</button>
               <button onClick={() => setModal('personas')}>{t.panels.personas}</button>
               <button onClick={() => setModal('history')}>{t.panels.history}</button>
@@ -88,9 +112,33 @@ export default function App(): React.JSX.Element {
 
           <main className="layout">
             <Table />
-            <ChatPanel />
+            <ChatPanel
+              drawerOpen={mobilePanel === 'chat'}
+              onClose={() => setMobilePanel('none')}
+            />
           </main>
-          <FloatingCompanion />
+          <FloatingCompanion
+            drawerOpen={mobilePanel === 'companion'}
+            onClose={() => setMobilePanel('none')}
+          />
+
+          {/* 移动端底部呼出按钮（仅 drawer 模式由 CSS 显示） */}
+          <div className="mobile-dock">
+            <button
+              className={mobilePanel === 'chat' ? 'on' : ''}
+              onClick={() => setMobilePanel((p) => (p === 'chat' ? 'none' : 'chat'))}
+            >
+              💬 {t.chat.tableTalk}
+            </button>
+            {hasCompanions && (
+              <button
+                className={mobilePanel === 'companion' ? 'on' : ''}
+                onClick={() => setMobilePanel((p) => (p === 'companion' ? 'none' : 'companion'))}
+              >
+                🗣 {t.chat.companions}
+              </button>
+            )}
+          </div>
         </>
       )}
 

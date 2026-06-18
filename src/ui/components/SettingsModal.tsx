@@ -137,6 +137,16 @@ export function SettingsModal(): React.JSX.Element {
         </select>
       </div>
       <div className="form-row">
+        <label>{t.settings.portraitLayout}</label>
+        <select
+          value={draft.portraitLayout}
+          onChange={(e) => setDraft({ ...draft, portraitLayout: e.target.value as AppSettings['portraitLayout'] })}
+        >
+          <option value="drawer">{t.settings['portraitLayout-drawer']}</option>
+          <option value="stacked">{t.settings['portraitLayout-stacked']}</option>
+        </select>
+      </div>
+      <div className="form-row">
         <button className="btn-ghost" onClick={resetBankroll}>{t.settings.resetBankroll}</button>
       </div>
 

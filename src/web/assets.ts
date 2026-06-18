@@ -5,6 +5,7 @@
  * 拦截该前缀从 Cache 命中，确保跨刷新/离线可用（见 sw.ts）。
  */
 import type { ImportResult } from '../../electron/preload/api.d'
+import { pickFile } from './filepick'
 
 // 相对前缀（无前导 /）：随文档 base 解析，部署在子路径 /<仓名>/ 下也正确。
 // <img>/<audio> 用此相对 URL 时浏览器按文档基址解析；SW 按子串 /casino-asset/ 命中。
@@ -13,34 +14,10 @@ export const ASSET_CACHE = 'casino-assets'
 const ROOT_DIRS = ['custom', 'music'] as const
 export type AssetDir = (typeof ROOT_DIRS)[number]
 
+// audio/* 放宽：Safari 对 m4a/aac 等 MIME 标注不一，限定具体类型会过滤掉合法文件
 const ACCEPT: Record<string, string> = {
   image: 'image/png,image/jpeg,image/webp,image/gif',
-  audio: 'audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/ogg,audio/flac,audio/*'
-}
-
-function pickFile(accept: string): Promise<File | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = accept
-    input.style.display = 'none'
-    // 用户取消时部分浏览器不触发任何事件；focus 兜底解析为 null
-    let done = false
-    const finish = (f: File | null): void => {
-      if (done) return
-      done = true
-      input.remove()
-      resolve(f)
-    }
-    input.onchange = () => finish(input.files?.[0] ?? null)
-    window.addEventListener(
-      'focus',
-      () => setTimeout(() => finish(input.files?.[0] ?? null), 500),
-      { once: true }
-    )
-    document.body.appendChild(input)
-    input.click()
-  })
+  audio: 'audio/*'
 }
 
 function makeFileName(original: string): string {

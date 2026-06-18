@@ -38,6 +38,49 @@ export function playingTrackId(): string | null {
   return bgm && !bgm.paused ? currentTrackId : null
 }
 
+/* ---------------- 移动端音频解锁 ---------------- */
+
+// iOS/Safari 自动播放策略：未经用户手势，audio.play() 与 speechSynthesis 会被静默拦截。
+// 在首个手势里 resume AudioContext + 播一段静音 + 预热语音，之后程序化播放才生效。
+let audioCtx: AudioContext | null = null
+let audioUnlocked = false
+
+export function installAudioUnlock(): void {
+  if (typeof window === 'undefined' || audioUnlocked) return
+  const events = ['pointerdown', 'touchend', 'keydown'] as const
+  const unlock = (): void => {
+    if (audioUnlocked) return
+    audioUnlocked = true
+    try {
+      const Ctx =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (Ctx) {
+        audioCtx = audioCtx ?? new Ctx()
+        void audioCtx.resume()
+        const src = audioCtx.createBufferSource()
+        src.buffer = audioCtx.createBuffer(1, 1, 22050)
+        src.connect(audioCtx.destination)
+        src.start(0)
+      }
+    } catch {
+      /* 不支持则忽略 */
+    }
+    try {
+      const synth = window.speechSynthesis
+      if (synth) {
+        synth.resume()
+        const warm = new SpeechSynthesisUtterance('')
+        warm.volume = 0
+        synth.speak(warm)
+      }
+    } catch {
+      /* ignore */
+    }
+    events.forEach((e) => window.removeEventListener(e, unlock))
+  }
+  events.forEach((e) => window.addEventListener(e, unlock, { passive: true }))
+}
+
 /* ---------------- TTS 队列 ---------------- */
 
 interface SpeechItem {
@@ -117,17 +160,33 @@ async function speak(item: SpeechItem): Promise<void> {
   }
 }
 
-function speakSystem(item: SpeechItem): Promise<void> {
+/** getVoices() 首帧常为空，需等 voiceschanged；带超时兜底，避免永久挂起 */
+function ensureVoices(): Promise<SpeechSynthesisVoice[]> {
+  const synth = window.speechSynthesis
+  if (!synth) return Promise.resolve([])
+  const v = synth.getVoices()
+  if (v.length) return Promise.resolve(v)
   return new Promise((resolve) => {
-    const synth = window.speechSynthesis
-    if (!synth) {
-      resolve()
-      return
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      resolve(synth.getVoices())
     }
+    synth.addEventListener?.('voiceschanged', finish, { once: true })
+    setTimeout(finish, 1000)
+  })
+}
+
+async function speakSystem(item: SpeechItem): Promise<void> {
+  const synth = window.speechSynthesis
+  if (!synth) return
+  const voices = await ensureVoices()
+  await new Promise<void>((resolve) => {
     const u = new SpeechSynthesisUtterance(item.text)
     u.volume = item.volume
-    const v = synth.getVoices().find((x) => x.name === item.voice.voice)
-    if (v) u.voice = v
+    const v = voices.find((x) => x.name === item.voice.voice)
+    if (v) u.voice = v // 找不到指定音色就用系统默认
     u.onend = () => resolve()
     u.onerror = () => resolve()
     synth.speak(u)
