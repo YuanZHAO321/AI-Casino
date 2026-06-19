@@ -1499,3 +1499,32 @@ html { -webkit-text-size-adjust: 100%; }
   border: 1px solid #3a2c1c; border-radius: 8px; padding: 8px;
 }
 .import-history-list .check-row { font-size: 12px; gap: 8px; }
+
+/* ---------- 平板及以下：下注区换行，发牌键不再被挤出右侧/屏幕外 ---------- */
+@media (max-width: 1100px) {
+  .bet-main { flex-wrap: wrap; justify-content: center; }
+  .btn-deal { margin-left: 0; }
+}
+
+/* drawer 模式：底部为呼出按钮留白，避免发牌键被 dock 覆盖 */
+.app[data-mode='drawer'] .table-wrap { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+
+/* 对手文字牌：默认隐藏，仅手机端显示 */
+.hand-cards-text { display: none; flex-wrap: wrap; gap: 3px; justify-content: center; }
+.hand-cards-text .cardtext {
+  font-family: var(--serif); font-size: 14px; line-height: 1.15;
+  background: #fdfcf7; color: #1c1c22; border: 1px solid #c9c4b4;
+  border-radius: 3px; padding: 1px 5px;
+}
+.hand-cards-text .cardtext.red { color: #b3262e; }
+
+/* ---------- 手机：对手显示具体牌面（文字形式），自己与荷官仍用图形牌（缩小） ---------- */
+@media (max-width: 560px), (orientation: landscape) and (max-height: 480px) {
+  .seat:not(.seat-you) .hand-cards { display: none; }
+  .seat:not(.seat-you) .hand-cards-text { display: flex; }
+  .seat:not(.seat-you) .seat-hands { gap: 8px; }
+  .seat-you .hand-cards .pcard,
+  .dealer-cards .pcard { width: 46px; height: 67px; }
+  .hand-cards .pcard { margin-left: -18px; }
+  .hand-cards .pcard:first-child { margin-left: 0; }
+}

@@ -35,6 +35,12 @@ function Hand({
           </span>
         ))}
       </div>
+      {/* 手机上对手用文字牌（具体牌面的紧凑形式）；默认隐藏，由 CSS 决定显隐 */}
+      <div className="hand-cards-text">
+        {hand.cards.map((c, i) => (
+          <span key={i} className={`cardtext ${c[0] === '♥' || c[0] === '♦' ? 'red' : ''}`}>{c}</span>
+        ))}
+      </div>
       <div className="hand-info">
         <span className="hand-total">{hand.soft ? `${hand.total}*` : hand.total}</span>
         {hand.doubled && <span className="hand-flag">2×</span>}
