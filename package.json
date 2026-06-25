@@ -22,10 +22,12 @@
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sherpa-onnx-darwin-arm64": "^1.13.2",
     "sherpa-onnx-node": "^1.13.2",
-    "sherpa-onnx-win-x64": "^1.13.2",
     "zustand": "^5.0.3"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-darwin-arm64": "^1.13.2",
+    "sherpa-onnx-win-x64": "^1.13.2"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
